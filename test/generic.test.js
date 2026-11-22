@@ -4,7 +4,7 @@ import { parseChangeset, planVersion, formatChanges, stripChangeset } from '../s
 import { evaluatePolicy, loadPolicy, typeMatches } from '../src/policy.js';
 import { buildPlanPrompt, buildApprovalMessage } from '../src/prompt.js';
 import { validateRequest } from '../src/validate.js';
-import { customerMessage, redactSecrets } from '../src/notify.js';
+import { customerMessage, redactSecrets, brandScrub } from '../src/notify.js';
 import { outcomeOf } from '../src/worker.js';
 
 const policy = loadPolicy();
@@ -101,4 +101,35 @@ test('secrets never reach Fin', () => {
   const m = redactSecrets('Consumer Key: 3MVG9abcdefghijklmnopqrstuvwxyz0123456789 consumer secret = ABCD1234EF secret token=xyz password: hunter2');
   assert.doesNotMatch(m, /3MVG9|ABCD1234EF|hunter2|xyz/);
   assert.equal(redactSecrets('Created Account.Renewal_Risk__c on the layout'), 'Created Account.Renewal_Risk__c on the layout');
+});
+
+// ---- vendor-free customer text (Phase 2, step 1)
+const VENDOR = /meshmesh|start_agent|continue_agent|get_agent_status|get_plan|list_connections|agentId|\bMCP\b|sandbox not available|\bthe bridge\b/i;
+
+test('brandScrub removes the vendor name, its URL, tool names and the known sandbox error', () => {
+  const dirty = "MeshMesh's plan is ready. MeshMesh tool start_agent failed: {\"error\":\"Sandbox not available - please try again\"} See https://studio.meshmesh.io/connections. The bridge is not signed in. agentId abc.";
+  const clean = brandScrub(dirty);
+  assert.doesNotMatch(clean, VENDOR);
+  assert.match(clean, /^Our system's plan is ready\./);
+  assert.equal(brandScrub('We will add the field.'), 'We will add the field.');
+});
+
+test('brandScrub leaves real Salesforce component names alone (no generic "agent" rule)', () => {
+  const t = 'The permission set "AncCrmIntegrationUser" and the "Einstein Agent User" profile are unchanged; Support_Agent416632420_Permissions stays.';
+  assert.equal(brandScrub(t), t);
+});
+
+test('customerMessage is vendor-free on every status, including raw upstream text', () => {
+  const raw = 'MeshMesh could not finish. MeshMesh tool get_agent_status failed.\nRESULT: FAILED - MeshMesh needs ApexTrigger, which cannot be changed through chat';
+  for (const st of ['planning', 'plan_ready', 'needs_input', 'rejected', 'building', 'succeeded', 'failed', 'needs_review', 'cancelled']) {
+    assert.doesNotMatch(customerMessage(st, raw), VENDOR, st);
+  }
+});
+
+test('every prompt sent to the planner carries the voice rule', () => {
+  const v = { requestor_email: 'a@b.com', change_request: 'Add a field', business_reason: 'x' };
+  for (const p of [buildPlanPrompt(v, 'fmr_x', policy), buildApprovalMessage('pv_1', '1. create CustomField A.B__c')]) {
+    assert.match(p, /Write as "we"/);
+    assert.match(p, /shown to the customer/);
+  }
 });

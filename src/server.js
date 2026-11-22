@@ -14,6 +14,7 @@ import { runPlan, runBuild } from './worker.js';
 import * as mesh from './meshmesh.js';
 import { findExistingField, sfHealth } from './sfcheck.js';
 import { resolveCustomer, connectionReady } from './customers.js';
+import { brandScrub } from './notify.js';
 
 const send = (res, code, body) => {
   res.writeHead(code, { 'Content-Type': 'application/json' });
@@ -36,7 +37,11 @@ async function readJson(req) {
 }
 
 const str = (v) => (v == null ? '' : String(v).trim());
-const reply = (code, accepted, request_id, status, message, extra = {}) => ({ code, body: { accepted, request_id, status, message, problems: '', ...extra } });
+const reply = (code, accepted, request_id, status, message, extra = {}) => {
+  const body = { accepted, request_id, status, message: brandScrub(message), problems: '', ...extra };
+  body.problems = brandScrub(body.problems);
+  return { code, body };
+};
 
 /** Applies the customer's decision on a plan. Pure state checks first; MeshMesh work runs in the background. */
 export function decide(id, body) {
@@ -61,7 +66,7 @@ export function decide(id, body) {
     if (planCb && !okUrl(planCb)) return reply(200, false, id, r.status, 'plan_callback_url must be an https URL', { problems: 'invalid plan_callback_url' });
     updateRequest(id, { status: 'planning', plan_sent: false, revisions: (r.revisions || 0) + 1, input: { ...r.input, plan_callback_url: planCb || r.input.plan_callback_url } }, `Customer feedback: ${feedback.slice(0, 300)}`);
     runPlan(id, { revision: feedback });
-    return reply(202, true, id, 'planning', 'Thanks. MeshMesh is updating the plan. Nothing has been changed yet.');
+    return reply(202, true, id, 'planning', "Thanks. We're updating the plan. Nothing has been changed yet.");
   }
   // approve
   const version = str(body.plan_version);
@@ -72,7 +77,7 @@ export function decide(id, body) {
   }
   updateRequest(id, { status: 'approved', progress_sent: false, input: { ...r.input, callback_url: str(body.callback_url) || r.input.callback_url, final_callback_url: str(body.final_callback_url) || r.input.final_callback_url } }, `Plan ${r.plan_version} approved by the customer`);
   runBuild(id, r.plan_version);
-  return reply(202, true, id, 'building', `Approved. MeshMesh is now making the ${r.changes?.length || ''} planned changes in Salesforce. This usually takes a few minutes.`.replace('  ', ' '), { plan_version: r.plan_version });
+  return reply(202, true, id, 'building', `Approved. We're now making the ${r.changes?.length || ''} planned changes in Salesforce.`.replace('  ', ' '), { plan_version: r.plan_version });
 }
 
 const server = http.createServer(async (req, res) => {
@@ -126,11 +131,11 @@ const server = http.createServer(async (req, res) => {
         // POC-03: which customer is this, and is THEIR Salesforce org connected to MeshMesh?
         const cust = resolveCustomer({ ...v.value, company_id: body.company_id });
         if (!cust.ok) {
-          logEvent('no_connection', { requestor_email: v.value.requestor_email });
+          logEvent('no_connection', { requestor_email: v.value.requestor_email, connect_url: cust.connectUrl });
           return send(res, 200, {
             accepted: false, request_id: '', status: 'rejected', field_api_name: v.value.field_api_name || '',
-            missing_fields: '', problems: 'no_connection: this customer has no Salesforce sandbox connected to MeshMesh',
-            message: `Your Salesforce sandbox is not connected yet, so nothing was changed. A Salesforce admin at your company needs to connect the sandbox once in MeshMesh (${cust.connectUrl}: Connections, then Salesforce, then sign in to the sandbox). After that, ask again and I can make the change.`,
+            missing_fields: '', problems: 'no_connection: no Salesforce org is connected for this customer',
+            message: "Your Salesforce org isn't connected yet, so nothing was changed. Your Salesforce admin needs to connect it first; once that's done, ask again and I can make the change, or I can connect you with a teammate.",
           });
         }
         v.value.customer = cust.customer;
@@ -141,11 +146,11 @@ const server = http.createServer(async (req, res) => {
           try { rd = connectionReady((await mesh.callTool('list_connections', {})).json, v.value.connection_id); }
           catch (e) { rd = { ready: false, why: `could not be checked (${e.message})` }; }
           if (!rd.ready) {
-            logEvent('connection_not_ready', { customer: cust.customer, why: rd.why });
+            logEvent('connection_not_ready', { customer: cust.customer, why: rd.why, connect_url: cust.connectUrl });
             return send(res, 200, {
               accepted: false, request_id: '', status: 'rejected', field_api_name: v.value.field_api_name || '',
-              missing_fields: '', problems: `connection_not_ready: ${rd.why}`,
-              message: `The connection to your Salesforce sandbox is ${rd.why}, so nothing was changed. Please ask your Salesforce admin to reconnect it in MeshMesh (${cust.connectUrl}), or I can connect you with a teammate.`,
+              missing_fields: '', problems: 'connection_not_ready',
+              message: "The connection to your Salesforce org isn't available right now, so nothing was changed. Please ask your Salesforce admin to check it, or I can connect you with a teammate.",
             });
           }
         }
@@ -188,8 +193,8 @@ const server = http.createServer(async (req, res) => {
           missing_fields: '',
           problems: '',
           message: approval === 'customer'
-            ? `Request ${r.request_id} accepted. MeshMesh is reviewing your org and preparing a plan. Nothing will change until you approve the plan.`
-            : `Request ${r.request_id} accepted. MeshMesh will now plan and configure: ${v.value.title}.`,
+            ? `Request ${r.request_id} accepted. We're reviewing your Salesforce setup and preparing a plan. Nothing will change until you approve the plan.`
+            : `Request ${r.request_id} accepted. We'll now plan and configure: ${v.value.title}.`,
         });
       }
 

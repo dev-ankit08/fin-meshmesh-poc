@@ -14,6 +14,7 @@ const TOKEN = 'test-token-123';
 const BRIDGE_PORT = 18000 + Math.floor(Math.random() * 1000);
 let fin; let finPort; let bridge;
 const hooks = {}; const waiters = {};
+const seenText = []; // every webhook payload and every HTTP reply, to prove the vendor never leaks
 
 function hook(name) {
   return new Promise((resolve) => {
@@ -28,7 +29,9 @@ async function call(p, body, token = TOKEN) {
   const r = await fetch(`http://127.0.0.1:${BRIDGE_PORT}${p}`, {
     method: 'POST', headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) }, body: JSON.stringify(body),
   });
-  return { code: r.status, body: await r.json() };
+  const out = await r.json();
+  seenText.push(JSON.stringify(out));
+  return { code: r.status, body: out };
 }
 
 before(async () => {
@@ -36,6 +39,7 @@ before(async () => {
     let raw = ''; for await (const c of req) raw += c;
     const name = req.url.slice(1);
     hooks[name] = JSON.parse(raw);
+    seenText.push(raw);
     waiters[name]?.(hooks[name]);
     res.writeHead(200).end('{}');
   });
@@ -141,4 +145,10 @@ test('legacy duplicate goes to the final webhook as failed, never succeeded', as
   const f = await hook(`final_${k}`);
   assert.equal(f.status, 'failed');
   assert.match(f.message, /already exists/);
+});
+
+test('no webhook payload or HTTP reply in this whole run names the vendor or its tools', () => {
+  assert.ok(seenText.length > 5, 'expected the earlier tests to have produced traffic');
+  const bad = seenText.filter((t) => /meshmesh|start_agent|continue_agent|get_agent_status|\bMCP\b|sandbox not available/i.test(t.replace(/"agent_id":"[^"]*"/g, '')));
+  assert.deepEqual(bad.map((t) => t.slice(0, 200)), []);
 });
