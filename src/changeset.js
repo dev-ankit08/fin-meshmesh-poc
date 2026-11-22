@@ -68,6 +68,79 @@ export function formatChanges(changes) {
   }).join('\n');
 }
 
+// ---------------------------------------------------------------- plain-language plan for customers
+// Deterministic templates (no model involved), so the wording is predictable and testable. The technical
+// list from formatChanges() is still what the build is told to do and what admins can ask to see.
+
+const humanize = (s) => String(s || '').replace(/__(c|mdt|e|x)$/i, '').replace(/[_]+/g, ' ').replace(/([a-z])([A-Z])/g, '$1 $2').replace(/\s+/g, ' ').trim();
+const objectOf = (name) => humanize(String(name).split(/[.\-]/)[0]);
+const q = (s) => `“${s}”`;
+const labelOf = (c) => (c.label && c.label.trim()) || humanize(String(c.name).split(/[.:]/).pop());
+const urlIn = (s) => (String(s || '').match(/https?:\/\/[^\s)"']+/) || [''])[0];
+const FIELD_KIND = /\b(Long Text Area|Text Area|Text|Number|Currency|Percent|Date\/Time|Date|Checkbox|Picklist|Multi-?select Picklist|Email|Phone|URL|Lookup|Formula)\b/i;
+const shorten = (s, n = 170) => (s.length <= n ? s : `${s.slice(0, n).replace(/\s+\S*$/, '')}…`);
+const VERB_PLAIN = { create: 'Add', modify: 'Update', assign: 'Assign', delete: 'Remove' };
+
+function plainLine(c, ctx) {
+  const t = c.type;
+  const obj = objectOf(c.name);
+  const lbl = labelOf(c);
+  const sum = (c.summary || '').trim();
+
+  if (t === 'CustomField') {
+    if (c.action === 'create') {
+      const kind = (sum.match(FIELD_KIND) || [])[1];
+      return `Add a ${kind ? `${kind.toLowerCase()} ` : ''}field called ${q(lbl)} to ${obj}`; // no article before the label: "a"/"an" would need guessing
+    }
+    return `Update the ${q(lbl)} field on ${obj}`;
+  }
+  if (t === 'Layout') {
+    const mine = ctx.fields.filter((f) => f.object === obj).map((f) => q(f.label));
+    const where = `the ${q(lbl)} page layout`;
+    if (mine.length) return `Show ${mine.join(' and ')} on ${where}`;
+    return `Update ${where}`;
+  }
+  if (t === 'PermissionSet') {
+    const access = /read and edit|read\/edit|edit/i.test(sum) ? 'read and edit' : /read/i.test(sum) ? 'read' : 'use';
+    if (c.action === 'create') {
+      if (/principal|credential/i.test(sum)) return `Create a permission set called ${q(lbl)} that lets people use the new connection`;
+      if (ctx.fields.length) return `Create a permission set called ${q(lbl)} that lets people ${access} ${ctx.fields.map((f) => q(f.label)).join(' and ')}`;
+      return `Create a permission set called ${q(lbl)}`;
+    }
+    if (/principal|credential/i.test(sum)) return `Let ${q(lbl)} use the new connection`;
+    if (ctx.fields.length) return `Let ${q(lbl)} ${access} ${ctx.fields.map((f) => q(f.label)).join(' and ')}`;
+    return `Update the ${q(lbl)} permission set`;
+  }
+  if (t === 'PermissionSetAssignment') {
+    const [ps, ...rest] = String(c.name).split(':');
+    return `Give ${rest.join(':').trim() || 'the user'} the ${q(c.label || humanize(ps))} permission set`;
+  }
+  if (t === 'ValidationRule') {
+    return sum ? `Add a validation rule on ${obj}: ${shorten(sum)}` : `Add a validation rule ${q(lbl)} on ${obj}`;
+  }
+  if (t === 'ExternalCredential') return `Create the ${q(lbl)} sign-in settings for the outside service`;
+  if (t === 'NamedCredential') {
+    const u = urlIn(sum);
+    return `Create the ${q(lbl)} connection${u ? ` to ${u}` : ' to the outside service'}`;
+  }
+  if (t === 'ExternalClientApplication') return `Create the ${q(lbl)} app that outside systems use to sign in to Salesforce`;
+  if (/^ExtlClntApp/.test(t)) return `Add sign-in settings for the ${q(humanize(String(c.name).replace(/_(glbl)?oauth$/i, '')))} app`;
+  if (t === 'RemoteSiteSetting') { const u = urlIn(sum); return `Allow Salesforce to call ${u || q(lbl)}`; }
+  if (t === 'CustomObject') return `Create an object called ${q(lbl)}`;
+  if (t === 'RecordType') return `Add a record type called ${q(lbl)} to ${obj}`;
+
+  const verb = VERB_PLAIN[c.action] || 'Update';
+  return `${verb} the ${q(lbl)} ${humanize(t).toLowerCase()}${sum ? `: ${shorten(sum)}` : ''}`;
+}
+
+/** Numbered, plain-business-language list of the planned changes (no API names, no component types). */
+export function formatChangesForCustomer(changes) {
+  const ctx = {
+    fields: changes.filter((c) => c.type === 'CustomField' && c.action === 'create').map((c) => ({ object: objectOf(c.name), label: labelOf(c) })),
+  };
+  return changes.map((c, i) => `${i + 1}. ${plainLine(c, ctx)}`).join('\n');
+}
+
 /** The plan text without the machine block (for the customer-facing summary). */
 export function stripChangeset(text) {
   return String(text || '')

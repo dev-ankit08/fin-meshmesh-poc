@@ -1,6 +1,9 @@
 // MeshMesh mission prompts. Deterministic so tests can assert on them.
 // The customer's text is data, fenced and labelled; the rules around it are the bridge's.
 
+// Everything MeshMesh writes can reach the customer. Keep the platform invisible and the language human.
+const VOICE_RULE = 'Everything you write is shown to the customer. Write as "we". Never mention MeshMesh, an agent, a sandbox, tools, MCP or any platform, and do not describe your own process. Use business words, not API names, in your summary and explanations (API names belong only in the BEGIN_CHANGESET list).';
+
 const CHANGESET_SPEC = [
   'End your plan message with a machine-readable list of EVERY component you will create or modify, in exactly this format:',
   'BEGIN_CHANGESET',
@@ -34,6 +37,7 @@ export function buildPlanPrompt(v, requestId, policy = {}) {
     '7. If a detail is missing and has no safe, conventional default, do not guess: end with exactly one line "RESULT: NEEDS_INPUT - <one short question for the customer>". Otherwise choose sensible defaults and state them in the plan.',
     '8. If something the request asks you to create already exists, end with "RESULT: FAILED - <component> already exists" unless modifying it is clearly what the customer wants.',
     '9. Start the plan with a 2-4 sentence summary in plain business language the customer will read.',
+    `10. ${VOICE_RULE}`,
     ...CHANGESET_SPEC,
     'Do not write a RESULT line when the plan is ready.',
   ].join('\n');
@@ -46,6 +50,7 @@ export function buildApprovalMessage(planVersion, changesText) {
     changesText,
     'If you find you need any component that is not on this list, or need to delete anything, STOP without making it and end with "RESULT: FAILED - plan change needed: <what and why>".',
     'Verify each component in the org after deploying.',
+    VOICE_RULE,
     'End your final message with exactly one line: "RESULT: SUCCEEDED" or "RESULT: FAILED - <one-line reason>". Never print secrets.',
   ].join('\n');
 }
@@ -58,6 +63,7 @@ export function buildRevisionMessage(feedback) {
     feedback,
     '"""',
     'Update the plan accordingly. Still PLAN ONLY: change nothing. Follow all earlier rules and end with a new BEGIN_CHANGESET ... END_CHANGESET block (or a RESULT: NEEDS_INPUT / RESULT: FAILED line).',
+    VOICE_RULE,
   ].join('\n');
 }
 

@@ -12,7 +12,7 @@ import { config } from './config.js';
 import { updateRequest, getRequest, logEvent } from './store.js';
 import { notifyFin } from './notify.js';
 import * as mesh from './meshmesh.js';
-import { parseChangeset, planVersion, formatChanges, stripChangeset } from './changeset.js';
+import { parseChangeset, planVersion, formatChanges, formatChangesForCustomer, stripChangeset } from './changeset.js';
 import { loadPolicy, evaluatePolicy, describeBlocked } from './policy.js';
 import { buildPlanPrompt, buildApprovalMessage, buildRevisionMessage, CHANGESET_REMINDER } from './prompt.js';
 import { liveGuard, mockGuard } from './guard.js';
@@ -153,7 +153,7 @@ export async function runPlan(id, { revision } = {}) {
       agentId = started.json?.agentId ?? started.json?.id ?? (started.text.match(/[A-Za-z0-9_-]{12,}/) || [])[0];
       if (!agentId) throw new Error(`start_agent returned no agentId: ${started.text.slice(0, 300)}`);
       updateRequest(id, { agent_id: agentId }, `MeshMesh agent started: ${agentId}`);
-      await setStatus(id, 'planning', 'MeshMesh is reviewing your org and preparing a plan.');
+      await setStatus(id, 'planning', "We're reviewing your Salesforce setup and preparing a plan.");
     } else {
       prev = req.last_plan_message || '';
       await meshApi.callTool('continue_agent', { agentId, message: buildRevisionMessage(revision), mode: 'plan' });
@@ -165,8 +165,8 @@ export async function runPlan(id, { revision } = {}) {
     return await handlePlanTurn(id, agentId, n, deadline);
   } catch (e) {
     logEvent('run_error', { request_id: id, phase: 'plan', error: e.message });
-    const msg = e.message === 'MESHMESH_AUTH_REQUIRED' ? 'The bridge is not signed in to MeshMesh.' : `Could not prepare a plan: ${e.message}`;
-    return planEnd(id, 'failed', `Reason: ${msg} Nothing was changed in Salesforce.`);
+    // The technical cause is in the run_error event above; the customer gets a vendor-free, honest summary.
+    return planEnd(id, 'failed', `Reason: we ran into a technical problem while preparing your plan (reference ${id}). Nothing was changed in Salesforce.`);
   }
 }
 
@@ -180,14 +180,14 @@ async function planEnd(id, status, message, extra) {
 }
 
 async function handlePlanTurn(id, agentId, n, deadline) {
-  if (n.status === 'timeout') return planEnd(id, 'failed', `Reason: MeshMesh did not finish the plan within ${config.maxRunMinutes} minutes. Nothing was changed in Salesforce.`);
-  if (n.status === 'failed') return planEnd(id, 'failed', n.summary || 'MeshMesh reported a failure while planning. Nothing was changed.');
-  if (n.status === 'needs_connection') return planEnd(id, 'failed', 'Reason: MeshMesh has no usable connection to your Salesforce org. Nothing was changed.');
+  if (n.status === 'timeout') return planEnd(id, 'failed', `Reason: we did not finish preparing the plan within ${config.maxRunMinutes} minutes. Nothing was changed in Salesforce.`);
+  if (n.status === 'failed') return planEnd(id, 'failed', n.summary || 'We could not prepare the plan. Nothing was changed.');
+  if (n.status === 'needs_connection') return planEnd(id, 'failed', 'Reason: we have no usable connection to your Salesforce org. Nothing was changed.');
   updateRequest(id, { last_plan_message: n.summary });
 
   if (n.outcome === 'failed') {
     // MeshMesh declined in the plan turn (e.g. needs Apex/Flow): nothing was built, so this is a rejection, not an outage.
-    const why = cleanMessage(n.summary) || 'MeshMesh could not plan this request through chat.';
+    const why = cleanMessage(n.summary) || 'We could not plan this request through chat.';
     return planEnd(id, 'rejected', `Reason: ${why}\n\nNothing was changed in Salesforce.`);
   }
   if (n.outcome === 'needs_input' || n.status === 'needs_input') {
@@ -210,7 +210,7 @@ async function handlePlanTurn(id, agentId, n, deadline) {
 
 async function setStatusNeedsInput(id, summary) {
   const req = getRequest(id);
-  if (approvalMode(req) === 'auto') return planEnd(id, 'failed', `Reason: MeshMesh needs more information. ${summary}`);
+  if (approvalMode(req) === 'auto') return planEnd(id, 'failed', `Reason: we need more information. ${summary}`);
   return setStatus(id, 'needs_input', summary, { channel: 'plan' });
 }
 
@@ -230,14 +230,15 @@ export async function reviewPlan(id, changes, planSummary) {
   const pol = evaluatePolicy(changes, policy, pre.existing);
   logEvent('plan_review', { request_id: id, changes, policy: pol, precheck: { ...pre, existing: [...pre.existing] } });
   const version = planVersion(changes);
-  const changesText = formatChanges(changes);
+  const changesText = formatChanges(changes);                 // technical: what the build is told to do, for admins
+  const changesPlain = formatChangesForCustomer(changes);     // plain business language: what the customer reads
   updateRequest(id, { changes, plan_version: version, plan_summary: planSummary.slice(0, 3000) });
 
   if (!pre.ok) {
-    return planEnd(id, 'rejected', `Reason: ${pre.conflicts.join('; ')}, so nothing was changed. Please choose a different name, or ask to update the existing component instead.`, { changes: changesText });
+    return planEnd(id, 'rejected', `Reason: ${pre.conflicts.join('; ')}, so nothing was changed. Please choose a different name, or ask to update the existing component instead.`, { changes: changesPlain, changes_technical: changesText });
   }
   if (!pol.ok) {
-    return planEnd(id, 'rejected', `Reason: part of this request can't be done through chat (${describeBlocked(pol.blocked)}). Nothing was changed in Salesforce. A teammate or your Salesforce admin can help with that part.`, { changes: changesText });
+    return planEnd(id, 'rejected', `Reason: part of this request can't be done through chat (${describeBlocked(pol.blocked)}). Nothing was changed in Salesforce. A teammate or your Salesforce admin can help with that part.`, { changes: changesPlain, changes_technical: changesText });
   }
   const warnings = [...pol.warnings, ...pre.notes].join(' ');
   if (!g) logEvent('guard_disabled', { request_id: id });
@@ -246,8 +247,8 @@ export async function reviewPlan(id, changes, planSummary) {
     return runBuild(id, version);
   }
   const expires = new Date(Date.now() + config.planTtlMinutes * 60_000).toISOString();
-  return setStatus(id, 'plan_ready', `${planSummary.slice(0, 700)}`.trim() || 'MeshMesh has prepared a plan.', {
-    channel: 'plan', extra: { changes: changesText, warnings }, patch: { plan_expires_at: expires },
+  return setStatus(id, 'plan_ready', `${planSummary.slice(0, 700)}`.trim() || "We've prepared a plan.", {
+    channel: 'plan', extra: { changes: changesPlain, changes_technical: changesText, warnings }, patch: { plan_expires_at: expires },
   });
 }
 
@@ -267,7 +268,7 @@ export async function runBuild(id, approvedVersion) {
     }
     updateRequest(id, { approved_version: approvedVersion, approved_at: new Date().toISOString() });
     await meshApi.callTool('continue_agent', { agentId: req.agent_id, message: buildApprovalMessage(approvedVersion, formatChanges(req.changes)), mode: 'build' });
-    await setStatus(id, 'building', 'Plan approved. MeshMesh is now configuring Salesforce.');
+    await setStatus(id, 'building', "Plan approved. We're applying your changes now.");
 
     let asked = false;
     let prev = req.last_plan_message || '';
@@ -276,19 +277,19 @@ export async function runBuild(id, approvedVersion) {
         deadline, prevMessage: prev,
         onConfirm: async () => {
           await meshApi.callTool('continue_agent', { agentId: req.agent_id, message: 'Confirmed. Proceed with this step only if it is within the approved component list.' });
-          await setStatus(id, 'building', 'MeshMesh is applying the changes to Salesforce.');
+          await setStatus(id, 'building', "We're applying the changes to Salesforce.");
         },
       });
-      if (n.status === 'timeout') return final(id, 'failed', `Reason: no final result from MeshMesh after ${config.maxRunMinutes} minutes. Some changes may have been made; a teammate will check the org.`);
+      if (n.status === 'timeout') return final(id, 'failed', `Reason: we did not get a final result after ${config.maxRunMinutes} minutes. Some changes may have been made; a teammate will check the org.`);
       if (n.status === 'failed' || n.status === 'needs_input' || n.status === 'needs_connection') {
-        return final(id, 'failed', n.summary || 'MeshMesh stopped before finishing.');
+        return final(id, 'failed', n.summary || 'The process stopped before finishing.');
       }
       if (n.outcome === 'failed') return final(id, 'failed', n.summary);
       if (n.outcome === 'succeeded') {
         if (!g) return final(id, 'succeeded', `${n.summary}\n\n(Independent Salesforce check is disabled.)`);
         const check = await g.verify(req.changes, before, orgOf(req)).catch((e) => ({ ok: false, problems: [`verification unavailable: ${e.message}`], unexpected: [], verified: [] }));
         logEvent('postverify', { request_id: id, ...check });
-        if (check.problems.length) return final(id, 'failed', `Reason: MeshMesh reported success, but the independent Salesforce check found: ${check.problems.join('; ')}.`);
+        if (check.problems.length) return final(id, 'failed', `Reason: the setup was reported as complete, but our independent Salesforce check found: ${check.problems.join('; ')}.`);
         if (check.unexpected.length) return final(id, 'needs_review', `The requested changes were made, but the independent check also found changes that were not in the approved plan: ${check.unexpected.slice(0, 10).join('; ')}. A teammate will review them.`);
         return final(id, 'succeeded', `${n.summary}\n\nIndependently verified in Salesforce: ${check.verified.length} of ${req.changes.length} components (${check.verified.slice(0, 8).join('; ')}).`);
       }
@@ -297,12 +298,12 @@ export async function runBuild(id, approvedVersion) {
         await meshApi.callTool('continue_agent', { agentId: req.agent_id, message: 'Please reply with exactly one line: "RESULT: SUCCEEDED" if every approved component is built and verified, otherwise "RESULT: FAILED - <reason>". Do not make further changes.' });
         continue;
       }
-      return final(id, 'failed', `MeshMesh finished without a clear result. Last message: ${n.summary}`);
+      return final(id, 'failed', `The process finished without a clear result. Last message: ${n.summary}`);
     }
   } catch (e) {
     logEvent('run_error', { request_id: id, phase: 'build', error: e.message });
-    const msg = e.message === 'MESHMESH_AUTH_REQUIRED' ? 'The bridge is not signed in to MeshMesh.' : e.message;
-    return final(id, 'failed', `Reason: could not complete the configuration (${msg}).`);
+    // Technical cause stays in the run_error event; a build may have partly run, so do not claim nothing changed.
+    return final(id, 'failed', `Reason: we ran into a technical problem while applying your changes (reference ${id}). Some changes may have been made; a teammate will check the org.`);
   }
 }
 
@@ -349,7 +350,7 @@ async function runMockPlan(id, { revision } = {}) {
   const req = getRequest(id);
   const step = Math.max(300, Math.min(config.pollIntervalMs, 5000));
   if (!revision) updateRequest(id, { agent_id: `mock_${id}` }, 'Mock MeshMesh agent started');
-  await setStatus(id, 'planning', 'MeshMesh is reviewing your org and preparing a plan.');
+  await setStatus(id, 'planning', "We're reviewing your Salesforce setup and preparing a plan.");
   await sleep(step);
   // A revision answers the open question, so the "unclear" marker no longer applies.
   const input = revision ? { ...req.input, change_request: `${req.input.change_request.replace(/\?\?|not sure|unclear/gi, '')} ${revision}` } : req.input;
@@ -362,7 +363,7 @@ async function runMockBuild(id, version) {
   const req = getRequest(id);
   const step = Math.max(300, Math.min(config.pollIntervalMs, 5000));
   updateRequest(id, { approved_version: version, approved_at: new Date().toISOString() });
-  await setStatus(id, 'building', 'Plan approved. MeshMesh is now configuring Salesforce.');
+  await setStatus(id, 'building', "Plan approved. We're applying your changes now.");
   await sleep(step);
   const check = await mockGuard.verify(req.changes);
   return final(id, 'succeeded', `Mock build complete.\n\nIndependently verified in Salesforce: ${check.verified.length} of ${req.changes.length} components (${check.verified.slice(0, 8).join('; ')}).`);
