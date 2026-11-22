@@ -68,7 +68,9 @@ async function runLive(id) {
   try {
     const prompt = buildMeshMeshPrompt(req.input, id);
     const args = { name: `Fin PoC ${id}: ${req.input.field_label}`, prompt, mode: 'plan' };
-    if (config.meshmeshConnectionId) args.connectionIds = [config.meshmeshConnectionId];
+    // POC-03: the customer's own connection (resolved per request), else the single default.
+    const connId = req.input.connection_id || config.meshmeshConnectionId;
+    if (connId) args.connectionIds = [connId];
     const started = await mesh.callTool('start_agent', args);
     const agentId = started.json?.agentId ?? started.json?.id ?? (started.text.match(/[A-Za-z0-9_-]{12,}/) || [])[0];
     if (!agentId) throw new Error(`start_agent returned no agentId: ${started.text.slice(0, 300)}`);
@@ -110,7 +112,7 @@ async function runLive(id) {
       }
       if (n.status === 'failed') { await setStatus(id, 'failed', n.summary || 'MeshMesh reported a failure.', true); return; }
       if (approved && n.status === 'turn_complete') {
-        if (n.outcome === 'succeeded' && config.sfGuard && config.sfTargetOrg) {
+        if (n.outcome === 'succeeded' && config.sfGuard && (req.input.sf_target_org || config.sfTargetOrg)) {
           // Don't trust the agent's own report: verify independently in Salesforce.
           const check = await verifyConfiguration(req.input).catch((e) => ({ ok: false, problems: [`verification unavailable: ${e.message}`] }));
           logEvent('postverify', { request_id: id, ...check });

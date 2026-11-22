@@ -12,8 +12,12 @@ import { config } from './config.js';
 const sh = promisify(exec);
 const API = 'v62.0';
 
-async function sfGet(path) {
-  const cmd = `sf api request rest "/services/data/${API}${path}" --method GET --target-org ${config.sfTargetOrg}`;
+const SAFE_ALIAS = /^[A-Za-z0-9._@-]{1,80}$/;
+
+// org = Salesforce CLI alias of the customer's org (POC-03); defaults to SF_TARGET_ORG.
+async function sfGet(path, org = config.sfTargetOrg) {
+  if (!SAFE_ALIAS.test(String(org || ''))) throw new Error('no valid Salesforce CLI org alias configured');
+  const cmd = `sf api request rest "/services/data/${API}${path}" --method GET --target-org ${org}`;
   const { stdout } = await sh(cmd, { timeout: 90_000, maxBuffer: 50 * 1024 * 1024, windowsHide: true });
   const start = stdout.search(/[\[{]/);
   if (start < 0) throw new Error(`Salesforce CLI returned no JSON for ${path}: ${stdout.slice(0, 200)}`);
@@ -28,15 +32,15 @@ const norm = (s) => String(s || '').trim().toLowerCase();
 // running user has field-level security on, so a field granted only via an unassigned permission set looks
 // absent. (This is exactly why MeshMesh, running as the same user, missed an existing field in test T4.)
 // The Tooling API FieldDefinition entity lists field metadata regardless of FLS.
-async function listFieldDefinitions(object) {
+async function listFieldDefinitions(object, org) {
   const q = `SELECT QualifiedApiName, Label, DataType FROM FieldDefinition WHERE EntityDefinition.QualifiedApiName = '${object.replace(/'/g, '')}'`;
-  const r = await sfGet(`/tooling/query?q=${encodeURIComponent(q)}`);
+  const r = await sfGet(`/tooling/query?q=${encodeURIComponent(q)}`, org);
   return (r.records || []).map((x) => ({ name: x.QualifiedApiName, label: x.Label, type: x.DataType }));
 }
 
 /** Returns { exists, matchedBy, field } for the requested field on the target object. */
-export async function findExistingField(object, apiName, label) {
-  const fields = await listFieldDefinitions(object);
+export async function findExistingField(object, apiName, label, org) {
+  const fields = await listFieldDefinitions(object, org);
   const byApi = fields.find((f) => norm(f.name) === norm(apiName));
   if (byApi) return { exists: true, matchedBy: 'API name', field: byApi };
   const byLabel = fields.find((f) => norm(f.label) === norm(label));
@@ -50,7 +54,8 @@ const EXPECTED_TYPE = { Text: /^text\(/i, Number: /^number\(/i, Checkbox: /^chec
 /** Verifies the configuration MeshMesh claims to have made. Returns { ok, problems[], details }. */
 export async function verifyConfiguration(v) {
   const problems = [];
-  const fields = await listFieldDefinitions(v.target_object);
+  const org = v.sf_target_org || config.sfTargetOrg;
+  const fields = await listFieldDefinitions(v.target_object, org);
   const f = fields.find((x) => norm(x.name) === norm(v.field_api_name));
   if (!f) problems.push(`field ${v.field_api_name} not found on ${v.target_object}`);
   else if (EXPECTED_TYPE[v.field_type] && !EXPECTED_TYPE[v.field_type].test(f.type)) {
@@ -59,7 +64,7 @@ export async function verifyConfiguration(v) {
 
   const ps = v.permission_set.replace(/'/g, "\\'");
   const q = `SELECT PermissionsRead, PermissionsEdit FROM FieldPermissions WHERE Field = '${v.target_object}.${v.field_api_name}' AND Parent.Label = '${ps}'`;
-  const fp = await sfGet(`/query?q=${encodeURIComponent(q)}`);
+  const fp = await sfGet(`/query?q=${encodeURIComponent(q)}`, org);
   const rec = fp.records?.[0];
   if (!rec) problems.push(`permission set "${v.permission_set}" has no access to the field`);
   else if (!rec.PermissionsRead || !rec.PermissionsEdit) problems.push(`permission set "${v.permission_set}" lacks Read/Edit (read=${rec.PermissionsRead}, edit=${rec.PermissionsEdit})`);

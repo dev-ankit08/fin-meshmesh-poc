@@ -17,7 +17,8 @@
 | Progress update (POC-06) | ✅ Pass | "MeshMesh is planning…" shown in Fin, tied to the request ID (webhook) |
 | Completion (POC-07) | ✅ Pass | Final "complete and independently verified" message in the live Messenger, about 4.5 min after "yes" |
 | Controlled failure, no false success (POC-08) | ✅ Pass | Duplicate field: **(a)** refused by the bridge pre-check, and **(b)** with the pre-check off, MeshMesh itself stopped with `RESULT: FAILED - duplicate field`, and Fin said the change was not made and gave the real reason. The org was unchanged in both cases. |
-| Connection to Salesforce (POC-03) | ⚠️ Partial | MeshMesh connects to the org through a connection an admin set up once. Fin does not start a per-customer connection. |
+| Connection to Salesforce (POC-03) | ✅ Pass (with a documented limit) | Each request is routed to **that customer's own** MeshMesh connection, which MeshMesh confirms is ready, and the guard runs on that customer's org. A customer with no connected sandbox is refused, and Fin explains how their admin connects it (tested live). **Limit:** MeshMesh's API can't *create* a connection, so the customer's admin authorises it once in MeshMesh Studio. Fin can't do that step in chat. |
+| Updates after the customer leaves (open question) | ✅ Pass / ⏳ token | Customer closed the site mid-run, and the final result was waiting on return (tested live). For **closed or expired** conversations, the bridge replies through the Intercom REST API. The code and connector are done; it needs an Intercom access token to switch on. |
 
 ## 3. How it works (integration findings)
 - **Fin → bridge:** Fin *Data connector* (HTTPS POST with a bearer token), called from a Fin *Procedure* after the customer confirms.
@@ -31,7 +32,7 @@
 2. **Fin can invent details.** In Preview it made up a success message, and in the first live failure it made up a cause ("deployment error"). Fixed by deciding the outcome in code (Code Condition) and putting the real "Reason: …" first in the message the bridge sends to Fin.
 3. **Preview can't show the full flow.** The final webhook is only delivered in a live Messenger conversation.
 4. **About 4–5 minutes per request.** Fin shows only one progress update in that time.
-5. **Updates after the conversation ends are not tested.** The webhook waits only work while the Procedure is waiting. The bridge has a fallback that posts into the conversation through the Intercom REST API, but it needs an access token and was not exercised.
+5. **Updates after the conversation ends.** If the customer just leaves, it works: the result waits in the conversation. If the conversation is closed or the 20-minute wait expires, Fin's webhook no longer accepts the result. The bridge then replies through the Intercom REST API as a customer-visible comment. The connector already sends the conversation ID; an Intercom access token is the last step.
 
 ## 5. Risks and dependencies (brief §9.4)
 
@@ -40,7 +41,7 @@
 | Integration | MeshMesh is a beta. The MCP tool contract and discovery accuracy may change. | Keep the independent Salesforce check; pin the tested behaviour in regression tests; raise the discovery/upsert issue with MeshMesh |
 | Integration | Metadata deploy is an *upsert*, so it can silently change existing components | Duplicate pre-check; ask MeshMesh for a validate-only deploy with "Created vs Changed" reporting |
 | Access | PoC used a Developer Edition org and a personal admin identity | Use a real **sandbox**, a dedicated MeshMesh service identity, and a least-privilege Salesforce integration user |
-| Access | Per-customer org connection isn't solved (POC-03) | Define with the MeshMesh team how a customer authorises their own sandbox |
+| Access | Per-customer connection: MeshMesh can't create connections by API; the PoC keys customers on the typed email domain | Customer admin connects the sandbox once in MeshMesh Studio; key customers on Intercom's **verified** identity; ask MeshMesh for a connection-invite link or API |
 | Security | Unattended MeshMesh build after one "yes" in chat | Plan-mode first, narrow prompt scope ("change nothing else"), post-verify; consider a human approval step for wider use cases |
 | Security | Shared bearer token; quick-tunnel public URL | Hosted endpoint, secret manager, request signing (HMAC), IP allow-listing |
 | Legal / compliance | AI agent changing customer orgs: liability, consent wording, audit trail; data residency of MeshMesh and Intercom | Legal review of the consent text in Fin; keep the bridge event log as an audit trail; confirm data-processing terms with both vendors |
@@ -50,8 +51,8 @@
 ## 6. Recommendation: **Proceed**, with these conditions before a pilot
 1. Re-run the test suite in a **real Salesforce sandbox** with least-privilege identities.
 2. **Host the bridge.** Add signing, retries and idempotency.
-3. Agree the **per-customer connection model** (POC-03) and **after-conversation updates** with the MeshMesh and Intercom teams.
+3. Switch on **after-conversation replies** (Intercom access token), and ask MeshMesh for a way to invite a customer to connect their sandbox (POC-03 onboarding).
 4. Keep the **independent Salesforce check** as a design rule for every future use case.
-5. Record a **demo** of the live Messenger run (deliverable 1).
+5. Record the **demo** using [docs/demo/Demo-Script.md](demo/Demo-Script.md) (deliverable 1).
 
 *Details:* [Technical guide](Fin-MeshMesh-Technical-Guide.md) (setup, test log, troubleshooting) · [Plan and findings](Fin-MeshMesh-PoC-Plan.md) · [Brief](Fin-MeshMesh-PoC-Brief.pdf)

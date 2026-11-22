@@ -29,7 +29,10 @@ npm start                   # http://localhost:8787/health
 | `src/notify.js` | Pushes status to Fin's Wait-for-webhook callback URLs |
 | `src/sfcheck.js` | Independent read-only Salesforce guard (Tooling `FieldDefinition`, `FieldPermissions`) |
 | `src/meshmesh.js` | MCP client with OAuth (tokens in `data/`, git-ignored) |
-| `docs/` | Execution plan, results, and the step-by-step technical guide |
+| `src/customers.js` | POC-03: per-customer MeshMesh connection + org (`config/customers.json`) |
+| `scripts/watch-log.ps1` | Live, readable event log |
+| `scripts/record-demo.ps1` | Full-screen demo recorder (press q to stop) |
+| `docs/` | Readout, execution plan, step-by-step technical guide, demo script |
 
 ## Results
 All PoC requirements (POC-01 to POC-08) passed, including the final status shown in a live Intercom Messenger. Recommendation: **Proceed (iterate on hardening)**. See [docs/Fin-MeshMesh-Technical-Guide.md](docs/Fin-MeshMesh-Technical-Guide.md).

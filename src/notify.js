@@ -50,7 +50,13 @@ export async function notifyFin(req, { status, message, isTerminal }) {
     }
   }
 
-  if (config.intercomToken && config.intercomAdminId && req.input.conversation_id) {
+  // After-conversation fallback: Fin's webhook wait only works while the Procedure is still waiting.
+  // If the final result can't be delivered that way (wait expired -> 404/410, conversation closed,
+  // no callback), reply into the conversation via the Intercom REST API instead. A "comment" is
+  // visible to the customer and reopens the conversation (Intercom also emails it if they're away).
+  const delivered = typeof results.webhook === 'number' && results.webhook >= 200 && results.webhook < 300;
+  const needFallback = isTerminal && (!delivered || config.intercomReplyMode === 'always');
+  if (needFallback && config.intercomToken && config.intercomAdminId && req.input.conversation_id) {
     try {
       const r = await fetch(`${config.intercomApiBase}/conversations/${encodeURIComponent(req.input.conversation_id)}/reply`, {
         method: 'POST',
@@ -61,10 +67,10 @@ export async function notifyFin(req, { status, message, isTerminal }) {
           'Intercom-Version': '2.13',
         },
         body: JSON.stringify({
-          message_type: 'note',
+          message_type: config.intercomReplyType, // 'comment' (customer sees it) or 'note' (internal only)
           type: 'admin',
           admin_id: config.intercomAdminId,
-          body: `<p><b>Salesforce setup ${req.request_id}</b>: ${status}</p><p>${escapeHtml(payload.message)}</p>`,
+          body: `<p><b>Update on your Salesforce request ${req.request_id}: ${status === 'succeeded' ? 'completed' : status === 'failed' ? 'not completed' : status}</b></p><p>${escapeHtml(payload.message).replace(/\n/g, '<br>')}</p>`,
         }),
       });
       results.intercom_note = r.status;

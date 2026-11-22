@@ -8,6 +8,9 @@
 - **Ops note:** the cloudflared quick tunnel dropped once (530) and its URL changed. Use a hosted endpoint beyond the PoC.
 - **MeshMesh-reported failure, live (T9):** with the bridge pre-check off (`SF_PRECHECK=false`), MeshMesh itself detected the duplicate and returned `RESULT: FAILED`. Fin showed "not completed" with no false success. It first invented a cause, which was fixed by putting a `Reason:` line first in the bridge's message and tightening the failed-branch instruction. The re-test quoted the real reason. The pre-check is back on and the Procedure is Disabled.
 - **One-page readout** with risks and dependencies: `docs/Fin-MeshMesh-PoC-Readout.md`.
+- **POC-03 (22 Nov):** the bridge routes each customer to its own MeshMesh connection and org (`config/customers.json`) and refuses customers with no connected sandbox, with connect instructions. Tested live (T11). MeshMesh's API cannot create connections; the customer's admin connects once in MeshMesh Studio.
+- **After the customer leaves (22 Nov):** the result waits in the conversation (T10, live). For closed or expired conversations there is a REST reply fallback; the connector now sends `conversation_id` (T12). **Pending: an Intercom access token** (guide §4.10).
+- **Demo (22 Nov):** recording script and tested full-screen recorder in `docs/demo/`. The Procedure is **Enabled** for the recording; disable it afterwards.
 - Full details: `Fin-MeshMesh-Technical-Guide.md` §7.1b, §7.2 (T7–T9), §8.
 
 ## Progress log (2026-11-21)

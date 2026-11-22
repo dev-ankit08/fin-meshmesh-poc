@@ -1,0 +1,11 @@
+{
+  "connect_url": "https://studio.meshmesh.io",
+  "customers": [
+    {
+      "name": "Example customer (sandbox)",
+      "match": { "email_domains": ["example.com"], "company_ids": ["intercom-company-id-123"] },
+      "meshmesh_connection_id": "<id from MeshMesh list_connections>",
+      "sf_target_org": "<Salesforce CLI alias of that sandbox, for the read-only guard>"
+    }
+  ]
+}

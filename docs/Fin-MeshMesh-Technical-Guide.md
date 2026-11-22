@@ -99,11 +99,17 @@ fin-meshmesh-bridge/
   src/validate.js         # input contract + MeshMesh prompt builder
   src/meshmesh.js         # MCP client (Streamable HTTP + OAuth/PKCE, token file)
   src/worker.js           # orchestration: plan → approve → build → poll → notify
-  src/notify.js           # POST status to Fin callback URL (+ optional Intercom note)
+  src/notify.js           # POST status to Fin callback URL (+ after-conversation REST reply)
+  src/sfcheck.js          # independent read-only Salesforce guard (§4.7b)
+  src/customers.js        # POC-03: per-customer MeshMesh connection lookup (§4.9)
   src/store.js            # JSON correlation store + event log (data/)
+  config/customers.example.json  # template for config/customers.json (git-ignored)
   scripts/mcp-probe.js    # list MCP tools + connections
   scripts/mcp-call.js     # call any MCP tool for debugging
-  test/validate.test.js   # unit tests
+  scripts/watch-log.ps1   # live, readable event log (used in the demo)
+  scripts/record-demo.ps1 # full-screen recorder (docs/demo/Demo-Script.md)
+  scripts/test-after-conversation.js  # tests the REST reply fallback (§4.10)
+  test/validate.test.js   # unit tests (11)
 ```
 
 ### 4.2 Install
@@ -127,7 +133,10 @@ npm test
 | `POLL_INTERVAL_MS` | `15000` |
 | `MAX_RUN_MINUTES` | `30` |
 | `PUBLIC_BASE_URL` | Tunnel URL (informational) |
-| `INTERCOM_ACCESS_TOKEN`, `INTERCOM_ADMIN_ID` | Optional fallback: post status as an internal note |
+| `INTERCOM_ACCESS_TOKEN`, `INTERCOM_ADMIN_ID` | After-conversation fallback (§4.10). Empty = off. |
+| `INTERCOM_REPLY_TYPE` | `comment` (customer sees it, default) or `note` (internal only) |
+| `INTERCOM_REPLY_MODE` | `fallback` (default: only when the final webhook can't be delivered) or `always` |
+| `SF_TARGET_ORG`, `SF_GUARD`, `SF_PRECHECK` | Salesforce guard (§4.7b). Overridden per customer by `config/customers.json` (§4.9). |
 
 ### 4.4 Start the bridge and sign it in to MeshMesh (one time)
 
@@ -166,9 +175,13 @@ Check it: `https://<tunnel>/health` should return `{"ok":true,"mode":"live","mes
   "permission_set": "Fin PoC Access",
   "business_reason": "flag accounts at risk of not renewing",
   "callback_url": "https://api.intercom.io/hooks/procedures/callback/…",
-  "final_callback_url": "https://api.intercom.io/hooks/procedures/callback/…"
+  "final_callback_url": "https://api.intercom.io/hooks/procedures/callback/…",
+  "conversation_id": "215476959156875"
 }
 ```
+Optional: `company_id` (customer key for §4.9).
+
+Additional rejections (all `accepted:false`, HTTP 200): `problems: "no_connection: …"` (customer has no connected sandbox, §4.9), `"connection_not_ready: …"`, `"duplicate_field: …"`, `"precheck_unavailable"`.
 When `final_callback_url` is present, the bridge sends **only the first** non-terminal update to `callback_url` and the **terminal** result to `final_callback_url`. Without it, everything goes to `callback_url` (legacy single-webhook mode).
 - **Accepted (202):** `{"accepted":true,"request_id":"fmr_…","status":"accepted","field_api_name":"Renewal_Risk__c","missing_fields":"","problems":"","message":"…"}`
 - **Rejected (200):** `{"accepted":false,"request_id":"","status":"rejected","field_api_name":"","missing_fields":"…","problems":"field_type must be one of Text, Number, Checkbox, Date","message":"…"}`
@@ -211,6 +224,38 @@ The bridge does not trust MeshMesh alone for safety or for the result. It runs i
 4. When the plan is ready, calls `continue_agent { agentId, message:"Approved…", mode:"build" }`. Pushes `building`.
 5. If `waitingFor:"confirmation"` appears, approves it with `continue_agent`.
 6. When the build turn finishes, reads the **last assistant message**, not `summary` (which lags), and maps its `RESULT:` line to `succeeded` or `failed`. Pushes the final status with `is_terminal:"true"`.
+7. Failure messages to Fin start with `Reason: …`, and the technical `RESULT:` line is removed (`customerMessage()` in `notify.js`), so Fin relays the real cause (T9).
+
+### 4.9 Per-customer Salesforce connection (POC-03)
+**What MeshMesh allows:** its MCP tools can `list_connections`, `get_connection` and `attach_connection`, but **cannot create** a connection. A Salesforce connection is authorised once by the customer's Salesforce admin in **MeshMesh Studio → Connections → Salesforce** (OAuth sign-in to the sandbox). So Fin can't "initialise" the connection itself. The bridge handles the rest:
+
+1. **Map customers to connections** in `config/customers.json` (git-ignored; copy `config/customers.example.json`):
+   ```json
+   {"connect_url": "https://studio.meshmesh.io",
+    "customers": [{"name": "Northwind (PoC Dev Edition org)",
+                   "match": {"email_domains": ["test.com"], "company_ids": []},
+                   "meshmesh_connection_id": "b6ef3fbf-…", "sf_target_org": "devhub"}]}
+   ```
+   `sf_target_org` is the Salesforce CLI alias the read-only guard uses for that customer's org (`sf org login web --alias <alias>`).
+2. **On each request** the bridge:
+   - finds the customer, by `company_id` if sent, else by email domain;
+   - calls MeshMesh `list_connections` to check the connection is **present, enabled and has credentials**;
+   - starts MeshMesh with **that customer's** `connectionIds`, and runs the pre-check and post-verify against **that customer's** org.
+3. **Unknown customer, or connection not ready:** `accepted:false` with `no_connection` / `connection_not_ready`. Fin tells the customer that nothing was changed and how their admin connects the sandbox. **Nothing runs against another customer's org.**
+4. Without `config/customers.json`, the bridge uses the single `MESHMESH_CONNECTION_ID` / `SF_TARGET_ORG` (PoC default).
+5. **Production note:** the PoC keys on the typed email domain. In production, key on Intercom's **verified** company or user identity (Messenger identity verification) so a customer can't claim another company's domain.
+
+**Onboarding a new customer:** (a) their admin connects the sandbox in MeshMesh Studio; (b) you run `npm run probe` to get the new connection id; (c) `sf org login web --alias <customer>-sbx` for the guard; (d) add the entry to `config/customers.json` (no restart needed; it's read on each request).
+
+### 4.10 Updates after the conversation ends
+- **Customer leaves but the conversation stays open** (closes the tab or browser): works with no extra setup. The Procedure keeps waiting, the final webhook is delivered, and the message is waiting, marked **New**, when the customer returns. Tested live in T10.
+- **Conversation closed, or the 20-minute wait expired:** Fin's webhook URL no longer accepts the result (HTTP 404). The bridge then **replies into the conversation through the Intercom REST API** as a customer-visible comment. That reopens the conversation, and Intercom emails the customer if they're away. Requirements:
+  1. The connector body sends `"conversation_id": "{{conversation.id}}"` (§5 step 6). **Done**: verified, the bridge received `215476959156875`.
+  2. **An access token (you create it):** Intercom → **Settings → Integrations → Developer Hub** → **New app** (name `MeshMesh PoC Bridge`, workspace CRDemo) → **Authentication** → copy the **Access token**. Make sure the app's permissions allow writing conversations (replies) and reading admins; the exact labels in Intercom may differ slightly.
+  3. **Your admin ID:** Developer Hub → your app → **API**, or call `GET https://api.intercom.io/me` with the token; the `id` field is the admin ID.
+  4. Put both in the bridge `.env` yourself (never paste them in chat): `INTERCOM_ACCESS_TOKEN=…`, `INTERCOM_ADMIN_ID=…`. Restart the bridge.
+  5. **Test:** take a conversation id from `data/events.log` (`request_received.body.conversation_id`) and run `node scripts/test-after-conversation.js <id>`. The conversation should show *"Update on your Salesforce request fmr_fallback_test: completed…"* as a reply from your admin.
+- Status: code done, connector updated, **token pending** (owner: you).
 
 ---
 
@@ -238,9 +283,9 @@ Path: **Settings → Integrations → Data connectors → + New data connector �
    - Make sure it's ticked.
 6. **Body → JSON:**
    ```json
-   {"requestor_email": "{{requestor_email}}", "field_label": "{{field_label}}", "field_type": "{{field_type}}", "permission_set": "{{permission_set}}", "business_reason": "{{business_reason}}", "callback_url": "{{callback_url}}", "final_callback_url": "{{final_callback_url}}"}
+   {"requestor_email": "{{requestor_email}}", "field_label": "{{field_label}}", "field_type": "{{field_type}}", "permission_set": "{{permission_set}}", "business_reason": "{{business_reason}}", "callback_url": "{{callback_url}}", "final_callback_url": "{{final_callback_url}}", "conversation_id": "{{conversation.id}}"}
    ```
-   Use **Add data** or type the `{{…}}` placeholders; both work.
+   Use **Add data** or type the `{{…}}` placeholders. For `conversation_id`, use the expand icon on the JSON box → **Add data** → search *Conversation ID* (conversation attribute). The narrow inline editor scrolls sideways and is easy to garble.
 7. **Headers → Add key and value:** `Content-Type` = `application/json`.
 8. **Test → Live request** with a safe invalid value, for example `field_type = Picklist`. Expect **Pass 200 OK** and `accepted:false`. This proves Intercom → tunnel → bridge and auth without starting MeshMesh. Optionally switch to **Mock response** with an accepted sample, so Preview has a positive example.
 9. **Fin tab:**
@@ -313,6 +358,10 @@ Path: **Fin AI Agent → Train → Procedures → + New procedure → Create fro
 | T8 | **Live Messenger** duplicate (`PoC Customer Tier`) | Refused, no change | **Pass** (22 Nov). The bridge guard rejected it (`precheck_duplicate`), and Fin asked for a different label. The field is still Text(50). |
 | T9 | **Live Messenger, failure reported by MeshMesh itself** (pre-check off with `SF_PRECHECK=false`; duplicate of `Account Health Score`, Number, so even a wrong redeploy would be identical and harmless) | MeshMesh reports FAILED; Fin says not done, gives the real reason, no false success | **Pass** after one fix (22 Nov). `fmr_251a4833`: MeshMesh stopped in planning with `RESULT: FAILED - duplicate field`, final webhook 200, and Fin took the *failed* branch, **but it invented the cause** ("error during the final deployment phase"). Fix: the bridge now starts failure messages with `Reason: …` and drops the `RESULT:` line (`customerMessage()` in `src/notify.js`), and the failed-branch instruction says to use only that reason. Re-test `fmr_7c4cc1d5`: Fin said *"The requested field label 'Account Health Score' already exists on the Account object."* The field is unchanged (LastModifiedDate is still its creation time). The pre-check is back on. |
 
+| T10 | **Customer leaves mid-run** (live Messenger) | Result still reaches the customer | **Pass** (22 Nov). `fmr_f96148ba` Last QBR Date (Date): after the request ID and the "planning" update, the site was closed. MeshMesh finished, post-verify passed, and the final webhook returned 200. When the site was reopened, the final "complete and independently verified" message was waiting, marked **New**. Salesforce: `Last_QBR_Date__c` Date, Fin PoC Access Read/Edit. |
+| T11 | **POC-03: customer without a connected sandbox** (live Messenger, email `ops@unknown-co.io`) | Refused before anything runs, with connect instructions | **Pass** (22 Nov). Fin: *"I was unable to start the configuration because your Salesforce sandbox is not connected yet. Nothing was changed… A Salesforce admin at your company needs to connect the sandbox in MeshMesh (https://studio.meshmesh.io: Connections > Salesforce > sign in to the sandbox)."* A known customer (test.com) was routed to its own connection (checked with `list_connections`) and its own org for the guard. |
+| T12 | Connector sends `conversation_id` (for the after-close fallback) | Bridge receives the Intercom conversation id | **Pass**: `215476959156875` received. The REST reply itself awaits the access token (§4.10). |
+
 ### 7.1b Running a live Messenger test (how the final result was shown)
 Preview can't deliver the second webhook, so the final result was shown in a real Messenger conversation:
 1. **Procedure → Fin availability → Enabled**, then **Save/Publish to Fin Main**.
@@ -322,6 +371,12 @@ Preview can't deliver the second webhook, so the final result was shown in a rea
 5. Afterwards, set **Fin availability → Disabled** and save. *(Done on 22 Nov after T7/T8.)*
 
 Expect about **4–5 minutes** between "Yes" and the final message: plan, then build, then MeshMesh's own verification, then the bridge's verification. Fin shows only the first progress update during that time, so tell customers up front how long it takes.
+
+### 7.2b Demo recording (deliverable 1)
+A real, full-screen recording of one run, made by a person in a normal browser. Step-by-step script with the exact messages, timings and narration: **[docs/demo/Demo-Script.md](demo/Demo-Script.md)**.
+- Recorder: Windows Snipping Tool (**Win + Shift + R**), or `.\scripts\record-demo.ps1`. The script was tested at 1920×1200, 30 fps, and reads true pixels even with display scaling; press **q** to stop.
+- Optional live console: `.\scripts\watch-log.ps1` shows Fin → bridge → MeshMesh → Salesforce check → Fin in plain lines.
+- Keep the MP4 out of git (`*.mp4` is ignored). Share it through SharePoint or OneDrive.
 
 ### 7.3 Verifying in Salesforce
 - **Field:** Setup → Object Manager → Account → Fields & Relationships → search the API name (for example `Renewal_Risk__c`).
@@ -352,6 +407,8 @@ Expect about **4–5 minutes** between "Yes" and the final message: plan, then b
 | `precheck` (22 Nov) | **Fin live Messenger**: duplicate "PoC Customer Tier" | already exists | rejected by the guard | not run | ✅ unchanged, Text(50) |
 | `fmr_251a4833` (22 Nov) | **Fin live Messenger**, pre-check off: duplicate "Account Health Score" | already exists | progress 200, final 200 (failed) | `RESULT: FAILED - duplicate field` (in planning, ~45 s) | ✅ unchanged. ⚠️ Fin invented the cause; fixed |
 | `fmr_7c4cc1d5` (22 Nov) | same, after the reason fix | already exists | progress 200, final 200 (failed) | `RESULT: FAILED - duplicate field` | ✅ unchanged; Fin quoted the real reason |
+| `fmr_f96148ba` (22 Nov) | **Fin live Messenger**, customer left mid-run | Last QBR Date, Date | progress 200, final 200 while the site was closed | `RESULT: SUCCEEDED` (~4 min) + post-verify ok | ✅ `Last_QBR_Date__c` Date; Fin PoC Access Read ✓ Edit ✓; message waiting on return |
+| `no_connection` (22 Nov) | **Fin live Messenger**, unknown company | Strategic Account, Checkbox | rejected (POC-03) | not run | ✅ nothing changed |
 
 > **Key risk found (T4).** MeshMesh's read-only discovery gave a false "does not exist" for an existing custom field, and the metadata deploy then silently **overwrote** the field definition. Widening a field is harmless, but narrowing it, or changing its type, could truncate or lose data. Recommendations:
 > 1. Add an **independent pre-check** in the bridge: a read-only Salesforce describe through its own integration user, or a separate read-only MeshMesh research run whose result the bridge parses. Reject duplicates before any build.

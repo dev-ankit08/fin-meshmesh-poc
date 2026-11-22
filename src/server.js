@@ -11,6 +11,7 @@ import { createRequest, getRequest, listRequests, logEvent } from './store.js';
 import { runRequest } from './worker.js';
 import * as mesh from './meshmesh.js';
 import { findExistingField, sfHealth } from './sfcheck.js';
+import { resolveCustomer, connectionReady } from './customers.js';
 
 const send = (res, code, body) => {
   res.writeHead(code, { 'Content-Type': 'application/json' });
@@ -80,12 +81,38 @@ const server = http.createServer(async (req, res) => {
             message: `The request is incomplete. ${v.missing.length ? `Missing: ${v.missing.join(', ')}.` : ''} ${v.invalid.join('; ')}`.trim(),
           });
         }
+        // POC-03: which customer is this, and is THEIR Salesforce org connected to MeshMesh?
+        const cust = resolveCustomer({ ...v.value, company_id: body.company_id });
+        if (!cust.ok) {
+          logEvent('no_connection', { requestor_email: v.value.requestor_email });
+          return send(res, 200, {
+            accepted: false, request_id: '', status: 'rejected', field_api_name: v.value.field_api_name,
+            missing_fields: '', problems: 'no_connection: this customer has no Salesforce sandbox connected to MeshMesh',
+            message: `Your Salesforce sandbox is not connected yet, so nothing was changed. A Salesforce admin at your company needs to connect the sandbox once in MeshMesh (${cust.connectUrl}: Connections, then Salesforce, then sign in to the sandbox). After that, ask again and I can make the change.`,
+          });
+        }
+        v.value.customer = cust.customer;
+        v.value.connection_id = cust.connectionId || '';
+        v.value.sf_target_org = cust.sfTargetOrg || '';
+        if (config.meshmeshMode === 'live' && v.value.connection_id) {
+          let rd;
+          try { rd = connectionReady((await mesh.callTool('list_connections', {})).json, v.value.connection_id); }
+          catch (e) { rd = { ready: false, why: `could not be checked (${e.message})` }; }
+          if (!rd.ready) {
+            logEvent('connection_not_ready', { customer: cust.customer, why: rd.why });
+            return send(res, 200, {
+              accepted: false, request_id: '', status: 'rejected', field_api_name: v.value.field_api_name,
+              missing_fields: '', problems: `connection_not_ready: ${rd.why}`,
+              message: `The connection to your Salesforce sandbox is ${rd.why}, so nothing was changed. Please ask your Salesforce admin to reconnect it in MeshMesh (${cust.connectUrl}), or I can connect you with a teammate.`,
+            });
+          }
+        }
         // Independent duplicate guard (read-only describe) - runs BEFORE MeshMesh is involved.
-        const guardOn = config.sfGuard && config.sfPrecheck && config.sfTargetOrg && config.meshmeshMode === 'live';
+        const guardOn = config.sfGuard && config.sfPrecheck && v.value.sf_target_org && config.meshmeshMode === 'live';
         if (guardOn) {
           let dup;
           try {
-            dup = await findExistingField(v.value.target_object, v.value.field_api_name, v.value.field_label);
+            dup = await findExistingField(v.value.target_object, v.value.field_api_name, v.value.field_label, v.value.sf_target_org);
           } catch (e) {
             logEvent('precheck_error', { error: e.message });
             return send(res, 200, {

@@ -29,6 +29,10 @@ export const config = {
   intercomToken: env('INTERCOM_ACCESS_TOKEN', ''),
   intercomAdminId: env('INTERCOM_ADMIN_ID', ''),
   intercomApiBase: env('INTERCOM_API_BASE', 'https://api.intercom.io'),
+  // 'comment' = customer-visible reply (default); 'note' = internal note for teammates only
+  intercomReplyType: env('INTERCOM_REPLY_TYPE', 'comment') === 'note' ? 'note' : 'comment',
+  // 'fallback' = REST reply only when the final webhook can't be delivered; 'always' = also on success
+  intercomReplyMode: env('INTERCOM_REPLY_MODE', 'fallback'),
 
   // Independent read-only Salesforce guard (Salesforce CLI alias of the target org)
   sfTargetOrg: env('SF_TARGET_ORG', ''),

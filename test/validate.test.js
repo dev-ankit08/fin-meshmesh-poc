@@ -71,3 +71,28 @@ test('success message drops the RESULT line without adding a reason', () => {
   const m = customerMessage('succeeded', 'Created the field.\n\nRESULT: SUCCEEDED');
   assert.equal(m, 'Created the field.');
 });
+
+import { resolveCustomer, connectionReady } from '../src/customers.js';
+
+const custData = { connectUrl: 'https://studio.meshmesh.io', customers: [
+  { name: 'Acme', match: { email_domains: ['acme.com'], company_ids: ['co-1'] }, meshmesh_connection_id: 'conn-acme', sf_target_org: 'acme-sbx' },
+] };
+
+test('customer is resolved by email domain or company id (POC-03)', () => {
+  const a = resolveCustomer({ requestor_email: 'Jo@ACME.com' }, custData);
+  assert.equal(a.ok, true); assert.equal(a.connectionId, 'conn-acme'); assert.equal(a.sfTargetOrg, 'acme-sbx');
+  assert.equal(resolveCustomer({ requestor_email: 'x@other.org', company_id: 'co-1' }, custData).customer, 'Acme');
+});
+
+test('unknown customer is refused with a connect link instead of using someone else\'s org', () => {
+  const r = resolveCustomer({ requestor_email: 'someone@unknown.io' }, custData);
+  assert.equal(r.ok, false); assert.equal(r.reason, 'no_connection'); assert.match(r.connectUrl, /meshmesh/);
+});
+
+test('connection readiness comes from MeshMesh list_connections', () => {
+  const list = { connections: [{ id: 'c1', enabled: true, hasCredentials: true }, { id: 'c2', enabled: true, hasCredentials: false }], notReady: [{ id: 'c3' }] };
+  assert.equal(connectionReady(list, 'c1').ready, true);
+  assert.equal(connectionReady(list, 'c2').ready, false);
+  assert.equal(connectionReady(list, 'c3').ready, false);
+  assert.equal(connectionReady(list, 'zz').ready, false);
+});
