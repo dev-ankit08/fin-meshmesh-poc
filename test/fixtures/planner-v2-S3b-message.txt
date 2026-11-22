@@ -1,0 +1,3 @@
+We can't build the PartnerCallout code itself because custom code can't be created or changed through chat, but the secure connection to your partner's address already exists as "Partner API". The plan changes nothing and gives your developer and admin step-by-step instructions to add the code, enter the API key in Setup and give the right users access.
+
+RESULT: FAILED - needs ApexClass, which cannot be changed through chat

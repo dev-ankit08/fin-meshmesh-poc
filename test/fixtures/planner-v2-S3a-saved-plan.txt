@@ -1,0 +1,36 @@
+## Summary
+You asked for Salesforce to call the partner API at api.partner.example.com, signing in with OAuth 2.0 client credentials through auth.partner.example.com/token. Your org already has a "Partner API" connection to that exact address, but it signs in with a fixed API key sent in a request header, not OAuth. We can't add OAuth without either switching that connection over or setting up a second connection to the same partner. Nothing has been changed, and we need you to pick one of those options before we build.
+
+ASSESSMENT: CONFLICT - Partner API (named credential) - It already points to https://api.partner.example.com and is turned on for callouts. It gets its sign-in details from the existing "Partner API" external credential instead of using OAuth.
+ASSESSMENT: CONFLICT - Partner API (external credential) - It uses a custom sign-in method: one shared login that adds an API key to every request, read from a stored key value. It has no OAuth client-credentials setup and no link to the partner's token address, so the request and this setup can't both apply to the same connection.
+
+## What we found
+- We found no code, automation or external service that uses the existing Partner API connection. No permission set gives anyone access to its login either, so today nobody can use it to call the partner.
+- No standalone remote site exists for the partner domains. None is needed, because the named credential lets Salesforce reach the address.
+- An External Client App is not the right tool here. It controls how outside systems sign in to Salesforce, not how Salesforce calls out. Outbound OAuth calls use a Named Credential with an External Credential.
+
+## Options for you
+1. **Switch the existing Partner API connection to OAuth (recommended, since nothing uses it today).** We would change the existing external credential to OAuth 2.0 client credentials with its token address set to https://auth.partner.example.com/token, using the standard setting that sends the client ID and secret in the request body. We'd keep the Partner API named credential and its address as they are. The API-key header would be removed. We'd also create a "Partner API Callout Access" permission set that gives access to the connection's login.
+2. **Keep the API-key connection and add a separate OAuth connection.** We would create a new "Partner API OAuth" external credential, a named credential to the same address, and a permission set. You'd end up with two connections to the same partner.
+
+Either way, your admin enters the partner's client ID and client secret in Setup. We never handle or see the secret.
+
+DEPENDENCIES:
+- Named credentials: Partner API, which depends on the Partner API external credential and would be affected by option 1.
+- External credentials: Partner API, with one shared login and an API-key header.
+- Permission sets: none currently give access to the Partner API login.
+- Code, automation and external services: none found that use Partner API.
+- This list may be incomplete. Callouts written by name inside managed packages, or set up in places our search can't see, wouldn't show up.
+
+MANUAL_STEPS:
+1. Tell us which option you want: switch the existing Partner API connection to OAuth, or add a separate one.
+2. Once we've built it, go to Setup > Security > Named Credentials > External Credentials tab and open the partner external credential.
+3. Under Principals, edit the shared login and enter the client ID and client secret from the partner, plus a scope if the partner needs one.
+4. Go to Setup > Users > Permission Sets > Partner API Callout Access > Manage Assignments, and assign it to the integration users who run the callouts.
+5. Test a callout and check that the partner returns a successful response.
+
+BEGIN_CHANGESET
+[]
+END_CHANGESET
+
+RESULT: NEEDS_INPUT - Your existing "Partner API" connection to api.partner.example.com uses an API key: should we switch it to OAuth client credentials, or keep it and add a separate OAuth connection?

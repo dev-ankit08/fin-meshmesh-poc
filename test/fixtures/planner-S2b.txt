@@ -1,0 +1,30 @@
+## Summary
+You asked for a rule that stops an Opportunity from being saved as Closed Won unless its Amount is exactly 0. Your org already has an active rule that does the opposite: it blocks Closed Won unless the Amount is above 0. If both rules were active, no Opportunity could ever be saved as Closed Won. We have changed nothing, and we need you to choose which rule should apply before we build anything.
+
+ASSESSMENT: CONFLICT - Opportunity.Amount_Required_When_Closed_Won (existing, active) vs. new zero-amount rule - The existing rule's formula is `AND(ISPICKVAL(StageName, "Closed Won"), OR(ISBLANK(Amount), Amount <= 0))`. In plain words, it blocks a Closed Won Opportunity when the Amount is blank, zero or negative. The requested rule would block a Closed Won Opportunity whenever the Amount is anything other than 0. No Amount satisfies both, so every Closed Won save would fail.
+
+This is the only validation rule on Opportunity. The standard Amount and Stage fields exist, so no new fields are needed.
+
+DEPENDENCIES:
+- ValidationRule: Opportunity.Amount_Required_When_Closed_Won (the component that conflicts with the request)
+- Other components: we found none that reference this rule.
+- This list may be incomplete. The dependency index Salesforce provides doesn't cover validation rules well, and it can't show runtime effects. For example, automations, integrations or data loads that close Opportunities with a positive Amount would start failing under the new rule.
+
+**Your options:**
+1. **Replace:** deactivate the existing rule (we never delete) and create `Opportunity.Closed_Won_Requires_Zero_Amount`.
+   - Formula: `AND(ISPICKVAL(StageName, "Closed Won"), OR(ISBLANK(Amount), Amount <> 0))`
+   - A blank Amount counts as not zero.
+   - The error shows on the Amount field with the message "Closed Won deals must have a zero amount."
+2. **Keep the existing rule:** we build nothing.
+
+MANUAL_STEPS:
+1. Go to Setup > Object Manager > Opportunity > Validation Rules.
+2. Open "Amount_Required_When_Closed_Won" and decide whether it should stay active.
+3. Check with your sales operations team that Closed Won deals really should have a zero Amount. This would remove won revenue from forecasts and reports.
+4. Reply with your choice (Replace or Keep) so we can finish the build plan.
+
+BEGIN_CHANGESET
+[]
+END_CHANGESET
+
+RESULT: NEEDS_INPUT - The existing active rule "Amount_Required_When_Closed_Won" requires a positive Amount at Closed Won, and the new rule would require a zero Amount, so both can't apply: should we deactivate the existing rule and create the zero-amount rule, or keep the existing rule and build nothing?

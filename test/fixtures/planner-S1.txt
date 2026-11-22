@@ -1,0 +1,11 @@
+Your org already has this rule, and it is switched on. It stops anyone saving an Opportunity at Closed Won when the Amount is blank, zero or negative, and it shows "Enter an Amount before closing the deal." next to the Amount field. So there is nothing to build, and we will make no changes.
+
+ASSESSMENT: ALREADY_DONE - Opportunity.Amount_Required_When_Closed_Won - This rule is switched on and uses the formula AND(ISPICKVAL(StageName, "Closed Won"), OR(ISBLANK(Amount), Amount <= 0)). In plain words, it blocks the save when the Stage is Closed Won and the Amount is empty or not above zero. Its error message is exactly "Enter an Amount before closing the deal." and it appears on the Amount field, so it matches the request.
+
+We also checked that "Closed Won" is an active stage in the org and is the stage that marks a deal as won, so the rule points at the right stage. Opportunity has no other validation rules.
+
+BEGIN_CHANGESET
+[]
+END_CHANGESET
+
+RESULT: ALREADY_DONE - Active rule Opportunity.Amount_Required_When_Closed_Won already blocks Closed Won Opportunities unless Amount > 0, with the requested error message.

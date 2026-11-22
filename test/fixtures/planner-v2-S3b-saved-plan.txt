@@ -1,0 +1,24 @@
+You asked for a piece of custom code that calls your partner's service at https://api.partner.example.com and returns its reply. The secure connection to that address is already set up in your org as "Partner API", so nothing new is needed for the connection. The custom code itself cannot be created or changed through this channel, so your developer will need to add it using the steps below.
+
+ASSESSMENT: NEW - PartnerCallout (custom code class) - No custom code with "Partner" in its name exists. Custom code cannot be created or changed through chat.
+ASSESSMENT: ALREADY_DONE - Partner API (secure connection to the partner address) - A connection called "Partner API" already points to https://api.partner.example.com and is switched on for outgoing calls. It sends an API key in a request header, and that key is stored separately in a linked login setting, also called "Partner API".
+
+DEPENDENCIES:
+- Secure connections: Partner API (address and switch-on setting), which relies on the login setting Partner API.
+- Login settings: Partner API, with one named login ("PartnerApiPrincipal") that holds the API key.
+- Permission sets: we found no permission set that clearly gives users access to the Partner API login. The only access grant we found for any login setting is in RevBridge_Admin, and it most likely belongs to the separate RevBridge LLM connection.
+- This list may be incomplete. We could not confirm that the API key has been entered, and we could not match that one access grant to a specific login.
+
+MANUAL_STEPS:
+1. Ask your developer to create a custom code class named PartnerCallout. It should call the existing "Partner API" connection by its name, not the raw web address, and return the reply body. It also needs a test class that uses a mock response.
+2. Deploy the class and its test from a developer environment, using your normal release process.
+3. In Setup > Security > Named Credentials > External Credentials > Partner API, check that the "PartnerApiPrincipal" login has the partner's API key entered under Authentication Parameters. Your admin should enter the key there. Do not share it in chat.
+4. In Setup > Users > Permission Sets, open or create a permission set. Under External Credential Principal Access, add "Partner API - PartnerApiPrincipal".
+5. Assign that permission set to the users or integration user who will run the callout.
+6. Run the test class, then try a sample call to confirm the partner service replies.
+
+BEGIN_CHANGESET
+[]
+END_CHANGESET
+
+RESULT: FAILED - needs ApexClass, which cannot be changed through chat
