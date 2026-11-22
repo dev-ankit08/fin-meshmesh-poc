@@ -131,6 +131,8 @@ test('the planner prompt only carries the smart rules when asked; the build mess
   const v = { requestor_email: 'a@b.com', change_request: 'Add a field', business_reason: 'x' };
   assert.match(P.buildPlanPrompt(v, 'fmr_x', {}, { smart: true }), /ASSESSMENT:.*ALREADY_DONE\|REDUNDANT\|CONFLICT\|NEW/s);
   assert.match(P.buildPlanPrompt(v, 'fmr_x', {}, { smart: true }), /RESULT: ALREADY_DONE/);
+  assert.match(P.buildPlanPrompt(v, 'fmr_x', {}, { smart: true }), /its formula or definition/);   // evidence is shown, not hidden
+  assert.doesNotMatch(P.buildPlanPrompt(v, 'fmr_x', {}, { smart: true }), /never paste formulas/i);
   assert.doesNotMatch(P.buildPlanPrompt(v, 'fmr_x', {}, {}), /ASSESSMENT|DEPENDENCIES|MANUAL_STEPS/);
   assert.doesNotMatch(P.buildPlanPrompt(v, 'fmr_x'), /ASSESSMENT/);
   assert.match(P.buildApprovalMessage('pv_1', '1. x', { smart: true }), /MANUAL_STEPS/);
