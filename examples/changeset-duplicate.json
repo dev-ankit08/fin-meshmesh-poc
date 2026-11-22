@@ -1,0 +1,3 @@
+[
+  {"action": "create", "type": "CustomField", "name": "Account.PoC_Customer_Tier__c", "label": "PoC Customer Tier", "summary": "Text(50)"}
+]

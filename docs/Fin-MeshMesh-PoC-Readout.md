@@ -56,3 +56,6 @@
 5. Record the **demo** using [docs/demo/Demo-Script.md](demo/Demo-Script.md) (deliverable 1).
 
 *Details:* [Technical guide](Fin-MeshMesh-Technical-Guide.md) (setup, test log, troubleshooting) · [Plan and findings](Fin-MeshMesh-PoC-Plan.md) · [Brief](Fin-MeshMesh-PoC-Brief.pdf)
+
+## 7. Addendum (22 Nov): v2 generic setup requests
+The bridge is no longer tied to the single-field use case. Customers describe any setup change in plain words. MeshMesh plans it and returns a machine-readable CHANGESET. The bridge applies a policy (deletes, Apex, flows, profiles and security settings are refused) and an org pre-check, the customer approves MeshMesh's actual plan in Fin, and after the build the bridge verifies every component and flags unapproved changes (`needs_review`). This addresses the readout's "consider a human approval step for wider use cases" risk: approval is now on the real plan, by version. Covered offline by 37 tests; live tests T14–T23 are defined in the [technical guide §12.8](Fin-MeshMesh-Technical-Guide.md#128-testing-v2).

@@ -39,18 +39,26 @@ const authProvider = {
 let client = null;
 let transport = null;
 
+let connecting = null;
+
+// Access tokens live only 300 s, so refreshes are frequent. Serialise connection setup so two callers never
+// refresh at once (a rotating refresh token would be spent by the first and rejected for the second).
 async function connect() {
   if (client) return client;
-  transport = new StreamableHTTPClientTransport(new URL(config.meshmeshMcpUrl), { authProvider });
-  const c = new Client({ name: 'fin-meshmesh-bridge', version: '0.1.0' });
-  try {
-    await c.connect(transport);
-  } catch (e) {
-    if (e instanceof UnauthorizedError) throw new Error('MESHMESH_AUTH_REQUIRED');
-    throw e;
-  }
-  client = c;
-  return client;
+  if (connecting) return connecting;
+  connecting = (async () => {
+    transport = new StreamableHTTPClientTransport(new URL(config.meshmeshMcpUrl), { authProvider });
+    const c = new Client({ name: 'fin-meshmesh-bridge', version: '0.1.0' });
+    try {
+      await c.connect(transport);
+    } catch (e) {
+      if (e instanceof UnauthorizedError) throw new Error('MESHMESH_AUTH_REQUIRED');
+      throw e;
+    }
+    client = c;
+    return client;
+  })().finally(() => { connecting = null; });
+  return connecting;
 }
 
 /** Called by /oauth/start: kicks off the flow and returns the URL to open. */
@@ -74,16 +82,37 @@ export async function isAuthorised() {
 }
 
 /** Calls an MCP tool and returns { raw, text, json } where json is parsed from the first text block if possible. */
-export async function callTool(name, args = {}) {
-  const c = await connect();
-  let res;
-  try {
-    res = await c.callTool({ name, arguments: args });
-  } catch (e) {
-    // Connection may have gone stale (stateless server, token refresh) - retry once with a fresh client
-    client = null;
-    res = await (await connect()).callTool({ name, arguments: args });
+// Read-only tools are safe to repeat, so a transient network/token-refresh failure while polling must not fail a run
+// (seen live: one "fetch failed" right after a token refresh killed a healthy plan turn).
+export const READ_ONLY_TOOLS = new Set(['get_agent_status', 'get_plan', 'list_connections', 'list_agents', 'get_connection']);
+export const RETRY_DELAYS_MS = { read: [2000, 5000, 15000, 30000], write: [0, 3000, 10000] };
+
+// A 401 means the call was rejected before it ran, so repeating even a write tool is safe.
+export const isAuthError = (e) => /unauthori[sz]ed|401|MESHMESH_AUTH_REQUIRED|invalid_token|expired/i.test(String(e?.message || e));
+
+export async function withRetry(fn, delays, { sleep = (ms) => new Promise((r) => setTimeout(r, ms)), onRetry = () => {}, shouldRetry = () => true } = {}) {
+  let lastErr;
+  for (let i = 0; i <= delays.length; i++) {
+    try { return await fn(i); } catch (e) {
+      lastErr = e;
+      if (i === delays.length || !shouldRetry(e, i + 1)) break;
+      onRetry(e, i + 1);
+      if (delays[i]) await sleep(delays[i]);
+    }
   }
+  throw lastErr;
+}
+
+export async function callTool(name, args = {}) {
+  const readOnly = READ_ONLY_TOOLS.has(name);
+  const delays = readOnly ? RETRY_DELAYS_MS.read : RETRY_DELAYS_MS.write;
+  // Write tools: first retry always (stale connection), later retries only for auth errors (never ran).
+  const shouldRetry = readOnly ? () => true : (e, n) => n === 1 || isAuthError(e);
+  const res = await withRetry(async (attempt) => {
+    // Connection may have gone stale (stateless server, token refresh) - retry with a fresh client
+    if (attempt > 0) client = null;
+    return (await connect()).callTool({ name, arguments: args });
+  }, delays, { shouldRetry, onRetry: (e, n) => logEvent('meshmesh_call_retry', { tool: name, attempt: n, error: e.message }) });
   const text = (res.content || []).filter((b) => b.type === 'text').map((b) => b.text).join('\n');
   let json = res.structuredContent ?? null;
   if (!json) { try { json = JSON.parse(text); } catch { /* not JSON */ } }

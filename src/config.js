@@ -41,5 +41,10 @@ export const config = {
   // (lets MeshMesh itself detect and report the duplicate); post-verify stays on via SF_GUARD.
   sfPrecheck: env('SF_PRECHECK', 'true') === 'true',
 
-  dataDir: path.join(ROOT, 'data'),
+  // v2 generic requests: what MeshMesh may change (see config/policy.json) and how long an
+  // unapproved plan stays valid before the customer must start again.
+  policyFile: env('POLICY_FILE', path.join(ROOT, 'config', 'policy.json')),
+  planTtlMinutes: Number(env('PLAN_TTL_MINUTES', 60)),
+
+  dataDir: env('DATA_DIR', path.join(ROOT, 'data')),
 };

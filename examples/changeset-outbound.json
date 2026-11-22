@@ -1,0 +1,5 @@
+[
+  {"action": "create", "type": "ExternalCredential", "name": "Partner_API", "label": "Partner API", "summary": "Custom auth protocol, one named principal"},
+  {"action": "create", "type": "NamedCredential", "name": "Partner_API", "label": "Partner API", "summary": "URL https://api.example.com, uses the Partner_API external credential"},
+  {"action": "modify", "type": "PermissionSet", "name": "Fin_PoC_Access", "summary": "access to the Partner_API principal"}
+]
