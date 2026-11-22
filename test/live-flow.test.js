@@ -119,7 +119,7 @@ test('live: MeshMesh claims success but a component is missing -> failed', async
   const after = { ...ORG_AFTER, CustomField: ORG_BEFORE.CustomField };
   const r = await planThenBuild(mesh, fakeOrg(ORG_BEFORE, after));
   assert.equal(r.status, 'failed');
-  assert.match(r.last_message, /^Reason: MeshMesh reported success, but .*Renewal_Risk_2__c was not found/);
+  assert.match(r.last_message, /^Reason: the setup was reported as complete, but our independent Salesforce check found: .*Renewal_Risk_2__c was not found/);
 });
 
 test('live: MeshMesh claims success but the permission set never got the field access -> failed (T14 finding)', async () => {

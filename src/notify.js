@@ -19,12 +19,32 @@ export function redactSecrets(text) {
 }
 
 /**
+ * Safety net: customers must never see the name of the service doing the work, its URL, or its tool names.
+ * Deliberately narrow (vendor name, URLs, tool names, one known error, "the bridge"): a generic "agent"
+ * rule would corrupt real Salesforce component names such as "Einstein Agent User".
+ */
+export function brandScrub(text) {
+  return String(text ?? '')
+    .replace(/https?:\/\/[^\s)'"]*meshmesh\.[a-z]+[^\s)'"]*/gi, '')
+    .replace(/\bMeshMesh(?:'s|\u2019s)\b/gi, "our system's")
+    .replace(/\bMeshMesh\b/gi, 'our system')
+    .replace(/\b(?:start_agent|continue_agent|get_agent_status|get_plan|list_connections|list_agents|attach_connection|switch_agent_mode)\b/gi, 'our system')
+    .replace(/\bagentId\b/g, 'reference')
+    .replace(/\bMCP(?: server)?\b/g, 'our system')
+    .replace(/Sandbox not available[^.\n]*\.?/gi, 'We are briefly busy.')
+    .replace(/\bthe bridge\b/gi, 'our system')
+    .replace(/(our system)(\s+our system)+/gi, '$1')
+    .replace(/[ \t]{2,}/g, ' ')
+    .replace(/(^|[.!?]\s+|\n)our system/g, (m, p) => `${p}Our system`);
+}
+
+/**
  * Customer-facing message for Fin: removes MeshMesh's technical "RESULT: ..." line and, for
  * failures, leads with an explicit "Reason: ..." sentence so Fin relays the real cause
  * instead of inventing one (seen in the live failure test, fmr_251a4833).
  */
 export function customerMessage(status, message) {
-  const text = redactSecrets(message);
+  const text = brandScrub(redactSecrets(message));
   const result = text.match(/RESULT:\s*\**\s*(SUCCEEDED|FAILED|NEEDS_INPUT)\s*(?:[-:–]\s*(.+))?/i);
   const body = text.replace(/BEGIN_CHANGESET[\s\S]*?END_CHANGESET/g, '').replace(/^\s*RESULT:.*$/gim, '').replace(/\n{3,}/g, '\n\n').trim();
   if (status === 'needs_input') {
@@ -61,8 +81,9 @@ export async function notifyFin(req, { status, message, isTerminal, channel, ext
     is_terminal: isTerminal ? 'true' : 'false',
     plan_version: req.plan_version || '',
     change_count: String(req.changes?.length ?? ''),
-    changes: redactSecrets(extra.changes ?? '').slice(0, 1500),
-    warnings: redactSecrets(extra.warnings ?? '').slice(0, 600),
+    changes: brandScrub(redactSecrets(extra.changes ?? '')).slice(0, 1500),                       // plain business language for the customer
+    changes_technical: brandScrub(redactSecrets(extra.changes_technical ?? '')).slice(0, 1500),   // API names, only if the customer or an admin asks
+    warnings: brandScrub(redactSecrets(extra.warnings ?? '')).slice(0, 600),
     updated_at: new Date().toISOString(),
   };
 
