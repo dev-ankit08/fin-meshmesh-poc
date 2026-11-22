@@ -3,7 +3,7 @@
 // (wait expired / conversation closed).
 // Usage:  node scripts/test-after-conversation.js <conversation_id> [succeeded|failed]
 // Needs INTERCOM_ACCESS_TOKEN and INTERCOM_ADMIN_ID in .env. Find the conversation id in the
-// Intercom Inbox URL (…/conversation/<id>) or in data/events.log (request_received.body.conversation_id).
+// Intercom Inbox URL (.../conversation/<id>) or in data/events.log (request_received.body.conversation_id).
 import '../src/config.js';
 import { notifyFin } from '../src/notify.js';
 
@@ -20,4 +20,4 @@ const message = status === 'failed'
   : 'Test only: this message checks that results can reach you after the chat has closed. No change was made.';
 const r = await notifyFin(fakeReq, { status, message, isTerminal: true });
 console.log(JSON.stringify(r));
-console.log(r.intercom_note === 200 ? 'OK: reply posted to the conversation.' : 'Not posted: check the token, admin id and conversation id.');
+console.log(r.intercom_reply === 200 ? 'OK: reply posted to the conversation.' : 'Not posted: check the token, admin id and conversation id.');

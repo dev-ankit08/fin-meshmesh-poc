@@ -251,11 +251,12 @@ The bridge does not trust MeshMesh alone for safety or for the result. It runs i
 - **Customer leaves but the conversation stays open** (closes the tab or browser): works with no extra setup. The Procedure keeps waiting, the final webhook is delivered, and the message is waiting, marked **New**, when the customer returns. Tested live in T10.
 - **Conversation closed, or the 20-minute wait expired:** Fin's webhook URL no longer accepts the result (HTTP 404). The bridge then **replies into the conversation through the Intercom REST API** as a customer-visible comment. That reopens the conversation, and Intercom emails the customer if they're away. Requirements:
   1. The connector body sends `"conversation_id": "{{conversation.id}}"` (§5 step 6). **Done**: verified, the bridge received `215476959156875`.
-  2. **An access token (you create it):** Intercom → **Settings → Integrations → Developer Hub** → **New app** (name `MeshMesh PoC Bridge`, workspace CRDemo) → **Authentication** → copy the **Access token**. Make sure the app's permissions allow writing conversations (replies) and reading admins; the exact labels in Intercom may differ slightly.
-  3. **Your admin ID:** Developer Hub → your app → **API**, or call `GET https://api.intercom.io/me` with the token; the `id` field is the admin ID.
+  2. **An access token (you create it):** Intercom → **Settings → API tokens** (`/settings/personal/authentication`) → **Create API token** → name `MeshMesh PoC Bridge` → copy it. **Don't reuse or revoke the existing "Salesforce" tokens**: they belong to CRDemo's Salesforce integration. *(Alternative: Developer Hub → New app → Authentication → Access token.)*
+  3. **Your admin ID:** Settings → Teammates → click your name → the number after `/admins/` in the URL, or `GET https://api.intercom.io/me` with the token (`id`). In the PoC it's `12048801`.
   4. Put both in the bridge `.env` yourself (never paste them in chat): `INTERCOM_ACCESS_TOKEN=…`, `INTERCOM_ADMIN_ID=…`. Restart the bridge.
   5. **Test:** take a conversation id from `data/events.log` (`request_received.body.conversation_id`) and run `node scripts/test-after-conversation.js <id>`. The conversation should show *"Update on your Salesforce request fmr_fallback_test: completed…"* as a reply from your admin.
-- Status: code done, connector updated, **token pending** (owner: you).
+- **Status: working (22 Nov, T13).** The token was checked (`GET /me` → admin 12048801, workspace d29t5bj9). `node scripts/test-after-conversation.js 215476959156875` → `intercom_reply: 200`, and the customer saw *"Update on your Salesforce request fmr_fallback_test: completed…"* in the Messenger, marked **New**.
+- **Notes for production:** (a) the reply appears as sent by the admin whose ID is configured (in the PoC, a real teammate), so use a dedicated bot teammate such as "Salesforce Setup Bot"; (b) an admin reply can reopen and assign the conversation, so check your inbox rules; (c) the bridge sends it only when the final webhook fails (`INTERCOM_REPLY_MODE=fallback`), so customers don't get the result twice.
 
 ---
 
@@ -360,7 +361,8 @@ Path: **Fin AI Agent → Train → Procedures → + New procedure → Create fro
 
 | T10 | **Customer leaves mid-run** (live Messenger) | Result still reaches the customer | **Pass** (22 Nov). `fmr_f96148ba` Last QBR Date (Date): after the request ID and the "planning" update, the site was closed. MeshMesh finished, post-verify passed, and the final webhook returned 200. When the site was reopened, the final "complete and independently verified" message was waiting, marked **New**. Salesforce: `Last_QBR_Date__c` Date, Fin PoC Access Read/Edit. |
 | T11 | **POC-03: customer without a connected sandbox** (live Messenger, email `ops@unknown-co.io`) | Refused before anything runs, with connect instructions | **Pass** (22 Nov). Fin: *"I was unable to start the configuration because your Salesforce sandbox is not connected yet. Nothing was changed… A Salesforce admin at your company needs to connect the sandbox in MeshMesh (https://studio.meshmesh.io: Connections > Salesforce > sign in to the sandbox)."* A known customer (test.com) was routed to its own connection (checked with `list_connections`) and its own org for the guard. |
-| T12 | Connector sends `conversation_id` (for the after-close fallback) | Bridge receives the Intercom conversation id | **Pass**: `215476959156875` received. The REST reply itself awaits the access token (§4.10). |
+| T12 | Connector sends `conversation_id` (for the after-close fallback) | Bridge receives the Intercom conversation id | **Pass**: `215476959156875` received. |
+| T13 | **After-close reply** through the Intercom REST API | Final result reaches the customer without Fin's webhook | **Pass** (22 Nov). With no webhook available, the bridge posted a comment (HTTP 200), and the customer saw it in the Messenger, marked **New** (§4.10). |
 
 ### 7.1b Running a live Messenger test (how the final result was shown)
 Preview can't deliver the second webhook, so the final result was shown in a real Messenger conversation:

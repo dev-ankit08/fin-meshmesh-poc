@@ -18,7 +18,7 @@
 | Completion (POC-07) | ✅ Pass | Final "complete and independently verified" message in the live Messenger, about 4.5 min after "yes" |
 | Controlled failure, no false success (POC-08) | ✅ Pass | Duplicate field: **(a)** refused by the bridge pre-check, and **(b)** with the pre-check off, MeshMesh itself stopped with `RESULT: FAILED - duplicate field`, and Fin said the change was not made and gave the real reason. The org was unchanged in both cases. |
 | Connection to Salesforce (POC-03) | ✅ Pass (with a documented limit) | Each request is routed to **that customer's own** MeshMesh connection, which MeshMesh confirms is ready, and the guard runs on that customer's org. A customer with no connected sandbox is refused, and Fin explains how their admin connects it (tested live). **Limit:** MeshMesh's API can't *create* a connection, so the customer's admin authorises it once in MeshMesh Studio. Fin can't do that step in chat. |
-| Updates after the customer leaves (open question) | ✅ Pass / ⏳ token | Customer closed the site mid-run, and the final result was waiting on return (tested live). For **closed or expired** conversations, the bridge replies through the Intercom REST API. The code and connector are done; it needs an Intercom access token to switch on. |
+| Updates after the customer leaves (open question) | ✅ Pass | Customer closed the site mid-run, and the final result was waiting on return (tested live). For **closed or expired** conversations, the bridge replies through the Intercom REST API, and the customer saw it in the Messenger (tested live). |
 
 ## 3. How it works (integration findings)
 - **Fin → bridge:** Fin *Data connector* (HTTPS POST with a bearer token), called from a Fin *Procedure* after the customer confirms.
@@ -32,7 +32,7 @@
 2. **Fin can invent details.** In Preview it made up a success message, and in the first live failure it made up a cause ("deployment error"). Fixed by deciding the outcome in code (Code Condition) and putting the real "Reason: …" first in the message the bridge sends to Fin.
 3. **Preview can't show the full flow.** The final webhook is only delivered in a live Messenger conversation.
 4. **About 4–5 minutes per request.** Fin shows only one progress update in that time.
-5. **Updates after the conversation ends.** If the customer just leaves, it works: the result waits in the conversation. If the conversation is closed or the 20-minute wait expires, Fin's webhook no longer accepts the result. The bridge then replies through the Intercom REST API as a customer-visible comment. The connector already sends the conversation ID; an Intercom access token is the last step.
+5. **Updates after the conversation ends.** If the customer just leaves, it works: the result waits in the conversation. If the conversation is closed or the 20-minute wait expires, Fin's webhook no longer accepts the result. The bridge then replies through the Intercom REST API as a customer-visible comment. This works (tested live). In production, send it from a dedicated bot teammate rather than a person's account.
 
 ## 5. Risks and dependencies (brief §9.4)
 
@@ -51,7 +51,7 @@
 ## 6. Recommendation: **Proceed**, with these conditions before a pilot
 1. Re-run the test suite in a **real Salesforce sandbox** with least-privilege identities.
 2. **Host the bridge.** Add signing, retries and idempotency.
-3. Switch on **after-conversation replies** (Intercom access token), and ask MeshMesh for a way to invite a customer to connect their sandbox (POC-03 onboarding).
+3. Use a **dedicated bot teammate** for after-conversation replies, and ask MeshMesh for a way to invite a customer to connect their sandbox (POC-03 onboarding).
 4. Keep the **independent Salesforce check** as a design rule for every future use case.
 5. Record the **demo** using [docs/demo/Demo-Script.md](demo/Demo-Script.md) (deliverable 1).
 

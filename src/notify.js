@@ -73,9 +73,9 @@ export async function notifyFin(req, { status, message, isTerminal }) {
           body: `<p><b>Update on your Salesforce request ${req.request_id}: ${status === 'succeeded' ? 'completed' : status === 'failed' ? 'not completed' : status}</b></p><p>${escapeHtml(payload.message).replace(/\n/g, '<br>')}</p>`,
         }),
       });
-      results.intercom_note = r.status;
+      results.intercom_reply = r.status;
     } catch (e) {
-      results.intercom_note = `error: ${e.message}`;
+      results.intercom_reply = `error: ${e.message}`;
     }
   }
 
