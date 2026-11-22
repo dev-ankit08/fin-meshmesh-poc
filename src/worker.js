@@ -262,15 +262,15 @@ export async function reviewPlan(id, changes, planSummary, findingExtra = {}) {
   const pol = evaluatePolicy(changes, policy, pre.existing);
   logEvent('plan_review', { request_id: id, changes, policy: pol, precheck: { ...pre, existing: [...pre.existing] } });
   const version = planVersion(changes);
-  const changesText = formatChanges(changes);                 // technical: what the build is told to do, for admins
-  const changesPlain = formatChangesForCustomer(changes);     // plain business language: what the customer reads
+  const changesText = formatChanges(changes);                 // technical (API names): what the build is told to do, and what customers see
+  const changesPlain = formatChangesForCustomer(changes);     // plain business language: sent as changes_plain (not shown by the Procedure today)
   updateRequest(id, { changes, plan_version: version, plan_summary: planSummary.slice(0, 3000) });
 
   if (!pre.ok) {
-    return planEnd(id, 'rejected', `Reason: ${pre.conflicts.join('; ')}, so nothing was changed. Please choose a different name, or ask to update the existing component instead.`, { ...findingExtra, changes: changesPlain, changes_technical: changesText });
+    return planEnd(id, 'rejected', `Reason: ${pre.conflicts.join('; ')}, so nothing was changed. Please choose a different name, or ask to update the existing component instead.`, { ...findingExtra, changes: changesText, changes_plain: changesPlain });
   }
   if (!pol.ok) {
-    return planEnd(id, 'rejected', `Reason: part of this request can't be done through chat (${describeBlocked(pol.blocked)}). Nothing was changed in Salesforce. A teammate or your Salesforce admin can help with that part.`, { ...findingExtra, changes: changesPlain, changes_technical: changesText });
+    return planEnd(id, 'rejected', `Reason: part of this request can't be done through chat (${describeBlocked(pol.blocked)}). Nothing was changed in Salesforce. A teammate or your Salesforce admin can help with that part.`, { ...findingExtra, changes: changesText, changes_plain: changesPlain });
   }
   const warnings = [...pol.warnings, ...pre.notes].join(' ');
   if (!g) logEvent('guard_disabled', { request_id: id });
@@ -280,7 +280,7 @@ export async function reviewPlan(id, changes, planSummary, findingExtra = {}) {
   }
   const expires = new Date(Date.now() + config.planTtlMinutes * 60_000).toISOString();
   return setStatus(id, 'plan_ready', `${planSummary.slice(0, 700)}`.trim() || "We've prepared a plan.", {
-    channel: 'plan', extra: { ...findingExtra, changes: changesPlain, changes_technical: changesText, warnings }, patch: { plan_expires_at: expires },
+    channel: 'plan', extra: { ...findingExtra, changes: changesText, changes_plain: changesPlain, warnings }, patch: { plan_expires_at: expires },
   });
 }
 

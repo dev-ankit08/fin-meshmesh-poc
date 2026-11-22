@@ -190,33 +190,13 @@ function splitSections(text) {
   return { assessments, dependencies: blocks.DEPENDENCIES, manualSteps: blocks.MANUAL_STEPS, rest: rest.join('\n').replace(/\n{3,}/g, '\n\n').trim() };
 }
 
-/** Removes a Salesforce formula (backticked, or an unquoted FUNCTION(...) expression) from one sentence. */
-function dropFormula(sentence) {
-  let out = sentence.replace(/`[^`]*`/g, (m) => (/[()=<>]/.test(m) ? '\u0000' : m.slice(1, -1)));
-  for (;;) {                                           // unquoted: AND( ... ) with balanced parentheses
-    const m = out.match(/\b[A-Z][A-Z_]{1,}\(/);
-    if (!m) break;
-    let depth = 0; let end = m.index + m[0].length - 1;
-    for (let i = end; i < out.length; i++) { if (out[i] === '(') depth++; else if (out[i] === ')') { depth--; if (depth === 0) { end = i; break; } } end = i; }
-    out = `${out.slice(0, m.index)}\u0000${out.slice(end + 1)}`;
-  }
-  if (!out.includes('\u0000')) return out;
-  out = out.replace(/\u0000/g, '').replace(/\s*(?:and\s+|,\s*)?(?:uses|has|with|is|are|:)?\s*(?:the\s+|its\s+)?formula\s*(?:is|:)?\s*([.,;:!?]*)\s*$/i, '$1');
-  const bare = out.replace(/[.,;:!?\s]+$/g, '');
-  // what is left of a "formula is X" sentence is only a stub ("Its formula is." / "The existing rule's"): drop it
-  if (!bare || (bare.length < 30 && /\b(?:it|its|the|this|rule|rule's|existing|component)\b/i.test(bare) && !/\b(?:blocks|stops|requires|allows)\b/i.test(bare))) return '';
-  return out;
-}
-
-/** Customer-safe wording: no raw formulas or code, no markdown, no backticks. */
+/** Tidies planner text for display: no markdown or backticks. Formulas and API names are kept on purpose (they are the evidence). */
 export function plainText(s) {
-  const sentences = String(s || '').replace(/\*\*([^*]+)\*\*/g, '$1').split(/(?<=[.!?])\s+(?=[A-Z"“(])/);
-  return sentences.map(dropFormula).filter(Boolean).join(' ')
-    .replace(/\bIn plain words,?\s*/gi, '')
-    .replace(/`/g, '')
+  return String(s || '')
+    .replace(/\*\*([^*]+)\*\*/g, '$1')
+    .replace(/`([^`]*)`/g, '$1')
     .replace(/\s{2,}/g, ' ')
     .replace(/\s+([.,;:])/g, '$1')
-    .replace(/^([a-z])/, (m) => m.toUpperCase())
     .trim();
 }
 

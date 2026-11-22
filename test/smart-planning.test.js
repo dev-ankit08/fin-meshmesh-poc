@@ -61,7 +61,7 @@ test('already done (real planner answer S1): terminal already_done with the evid
   assert.equal(hook.is_terminal, 'true');
   assert.match(hook.assessment, /^• Already in place: Opportunity\.Amount_Required_When_Closed_Won — /);
   assert.match(hook.assessment, /Enter an Amount before closing the deal/);
-  assert.doesNotMatch(hook.assessment, /ISPICKVAL|AND\(|formula/i, 'raw formulas must not reach the customer');
+  assert.match(hook.assessment, /AND\(ISPICKVAL\(StageName, "Closed Won"\), OR\(ISBLANK\(Amount\), Amount <= 0\)\)/, 'the formula is kept: it is the evidence');
   assert.doesNotMatch(hook.message, /BEGIN_CHANGESET|RESULT:|ASSESSMENT:/);
   assert.equal(hook.change_count, '');           // no plan, no build
   assert.equal(req.plan_version || '', '');
@@ -72,9 +72,9 @@ test('redundant (S2a): says it is covered, keeps the planner\'s dependency note,
   assert.equal(hook.status, 'already_done');
   assert.match(hook.assessment, /^• Already covered: /);
   assert.match(hook.assessment, /stricter|blank, 0 or below 0/i);
+  assert.match(hook.assessment, /ISPICKVAL\(StageName, "Closed Won"\)/);
   assert.match(hook.dependencies, /may be incomplete/i);
   assert.doesNotMatch(hook.message, /DEPENDENCIES|ASSESSMENT/);
-  assert.doesNotMatch(`${hook.assessment}\n${hook.message}`, /ISPICKVAL|formula/i);
 });
 
 test('conflict (S2b): needs_input carries the question first plus assessment, dependencies and manual steps', async () => {
@@ -103,8 +103,8 @@ test('a normal plan still works and also carries the findings (S3a-style plan wi
   const plan = `${fx('S3a').split('BEGIN_CHANGESET')[0]}`.trim() && fx('S3a').replace(/RESULT: NEEDS_INPUT.*$/m, '').trim();
   const { hook } = await planOnly(plan);
   assert.equal(hook.status, 'plan_ready');
-  assert.match(hook.changes, /^1\. Create the “Partner API OAuth” sign-in settings for the outside service/);
-  assert.match(hook.changes_technical, /ExternalCredential Partner_API_OAuth/);
+  assert.match(hook.changes, /^1\. Create ExternalCredential Partner_API_OAuth/);
+  assert.match(hook.changes_plain, /^1\. Create the “Partner API OAuth” sign-in settings for the outside service/);
 });
 
 test('every payload from these real planner answers is vendor-free', async () => {
@@ -122,8 +122,8 @@ test('parser: tags, plain text, sections removed from the free text', () => {
   assert.doesNotMatch(rest, /^ASSESSMENT:|^DEPENDENCIES:|^MANUAL_STEPS:|BEGIN_CHANGESET/m);
   assert.match(rest, /Summary/);
   assert.equal(C.parsePlannerFindings('A plain message with nothing tagged.').has.assessment, false);
-  assert.equal(C.plainText('It uses the formula `AND(A(B), C)`. In plain words, it blocks empty values.'), 'It blocks empty values.');
-  assert.equal(C.plainText('Its formula is `AND(X)`.'), '');
+  // formulas and API names are kept (they are the evidence); only markdown and backticks are removed
+  assert.equal(C.plainText('It uses the formula `AND(A(B), C)`. In plain words, it **blocks** empty values.'), 'It uses the formula AND(A(B), C). In plain words, it blocks empty values.');
   assert.equal(C.plainText('See `Amount` and `Stage`.'), 'See Amount and Stage.');
 });
 
