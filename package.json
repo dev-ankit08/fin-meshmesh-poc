@@ -8,7 +8,7 @@
   "scripts": {
     "start": "node src/server.js",
     "probe": "node scripts/mcp-probe.js",
-    "test": "node --test test/validate.test.js"
+    "test": "node --test test/*.test.js"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.17.0"

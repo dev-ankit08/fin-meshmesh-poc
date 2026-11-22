@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { validateRequest, toApiName, buildMeshMeshPrompt } from '../src/validate.js';
+import { validateRequest, toApiName } from '../src/validate.js';
+import { buildPlanPrompt } from '../src/prompt.js';
 import { normaliseStatus } from '../src/worker.js';
 
 const good = {
@@ -36,9 +37,11 @@ test('api name generation', () => {
   assert.equal(toApiName('2026 Score!'), 'F_2026_Score__c');
 });
 
-test('prompt carries every input and the duplicate rule', () => {
-  const p = buildMeshMeshPrompt(validateRequest(good).value, 'fmr_1');
-  for (const s of ['fmr_1', 'Customer_Tier__c', 'Text(100)', 'Sales Ops', 'duplicate field']) assert.ok(p.includes(s), s);
+test('legacy field request becomes a change_request and a plan prompt carrying every input', () => {
+  const v = validateRequest(good).value;
+  assert.equal(v.contract, 'legacy_field');
+  const p = buildPlanPrompt(v, 'fmr_1');
+  for (const s of ['fmr_1', 'Customer_Tier__c', 'Text(100)', 'Sales Ops', 'already exists', 'BEGIN_CHANGESET']) assert.ok(p.includes(s), s);
 });
 
 test('status mapping matches the observed MeshMesh shape', () => {
