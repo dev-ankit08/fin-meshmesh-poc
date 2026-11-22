@@ -149,3 +149,101 @@ export function stripChangeset(text) {
     .replace(/\n{3,}/g, '\n\n')
     .trim();
 }
+
+// ---------------------------------------------------------------- planner findings: ASSESSMENT / DEPENDENCIES / MANUAL_STEPS
+// The planner (when SMART_PLANNING is on) writes these tagged sections before the CHANGESET. The bridge never
+// judges them itself; it only parses them, removes them from the free text (so nothing is cut or duplicated)
+// and hands them to Fin as separate fields.
+
+const ASSESS_RE = /^\s*\**ASSESSMENT\**\s*:\s*\**\s*(ALREADY_DONE|REDUNDANT|CONFLICT|NEW)\b\**\s*[-–—:]\s*(.+)$/i;
+const HEADER_RE = /^\s*\**(DEPENDENCIES|MANUAL_STEPS)\**\s*:\s*\**\s*$/i;
+const LIST_ITEM_RE = /^\s*([-*•]|\d+[.)])\s+/;
+
+/** Splits a message into { findings, rest } where rest is the text without the tagged sections. */
+function splitSections(text) {
+  const lines = String(text || '').split('\n');
+  const assessments = [];
+  const blocks = { DEPENDENCIES: [], MANUAL_STEPS: [] };
+  const rest = [];
+  for (let i = 0; i < lines.length; i++) {
+    const a = lines[i].match(ASSESS_RE);
+    if (a) {
+      const [component, ...why] = a[2].split(/\s+[-–—]\s+/);
+      assessments.push({ tag: a[1].toUpperCase(), component: component.trim(), why: why.join(' - ').trim() });
+      continue;
+    }
+    const h = lines[i].match(HEADER_RE);
+    if (!h) { rest.push(lines[i]); continue; }
+    const key = h[1].toUpperCase();
+    let j = i + 1;
+    while (j < lines.length) {
+      const l = lines[j];
+      if (LIST_ITEM_RE.test(l) || (/^\s+\S/.test(l) && blocks[key].length)) { blocks[key].push(l.trim()); j++; continue; }
+      if (!l.trim()) { // blank line: the block goes on only if the next non-blank line is still a list item
+        let k = j + 1; while (k < lines.length && !lines[k].trim()) k++;
+        if (k < lines.length && LIST_ITEM_RE.test(lines[k])) { j = k; continue; }
+      }
+      break;
+    }
+    i = j - 1;
+  }
+  return { assessments, dependencies: blocks.DEPENDENCIES, manualSteps: blocks.MANUAL_STEPS, rest: rest.join('\n').replace(/\n{3,}/g, '\n\n').trim() };
+}
+
+/** Removes a Salesforce formula (backticked, or an unquoted FUNCTION(...) expression) from one sentence. */
+function dropFormula(sentence) {
+  let out = sentence.replace(/`[^`]*`/g, (m) => (/[()=<>]/.test(m) ? '\u0000' : m.slice(1, -1)));
+  for (;;) {                                           // unquoted: AND( ... ) with balanced parentheses
+    const m = out.match(/\b[A-Z][A-Z_]{1,}\(/);
+    if (!m) break;
+    let depth = 0; let end = m.index + m[0].length - 1;
+    for (let i = end; i < out.length; i++) { if (out[i] === '(') depth++; else if (out[i] === ')') { depth--; if (depth === 0) { end = i; break; } } end = i; }
+    out = `${out.slice(0, m.index)}\u0000${out.slice(end + 1)}`;
+  }
+  if (!out.includes('\u0000')) return out;
+  out = out.replace(/\u0000/g, '').replace(/\s*(?:and\s+|,\s*)?(?:uses|has|with|is|are|:)?\s*(?:the\s+|its\s+)?formula\s*(?:is|:)?\s*([.,;:!?]*)\s*$/i, '$1');
+  const bare = out.replace(/[.,;:!?\s]+$/g, '');
+  // what is left of a "formula is X" sentence is only a stub ("Its formula is." / "The existing rule's"): drop it
+  if (!bare || (bare.length < 30 && /\b(?:it|its|the|this|rule|rule's|existing|component)\b/i.test(bare) && !/\b(?:blocks|stops|requires|allows)\b/i.test(bare))) return '';
+  return out;
+}
+
+/** Customer-safe wording: no raw formulas or code, no markdown, no backticks. */
+export function plainText(s) {
+  const sentences = String(s || '').replace(/\*\*([^*]+)\*\*/g, '$1').split(/(?<=[.!?])\s+(?=[A-Z"“(])/);
+  return sentences.map(dropFormula).filter(Boolean).join(' ')
+    .replace(/\bIn plain words,?\s*/gi, '')
+    .replace(/`/g, '')
+    .replace(/\s{2,}/g, ' ')
+    .replace(/\s+([.,;:])/g, '$1')
+    .replace(/^([a-z])/, (m) => m.toUpperCase())
+    .trim();
+}
+
+const TAG_LABEL = { ALREADY_DONE: 'Already in place', REDUNDANT: 'Already covered', CONFLICT: 'Conflict' };
+
+/**
+ * Parsed planner findings, ready to send to Fin:
+ *   assessment   - one plain bullet per non-NEW element ("Already in place: <component>: <explanation>")
+ *   dependencies - bullets, plus the planner's own "may be incomplete" note if it wrote one
+ *   manual_steps - numbered steps for what only a person can do
+ *   has          - which of the three were found
+ */
+export function parsePlannerFindings(text) {
+  const s = splitSections(text);
+  const assessment = s.assessments.filter((a) => a.tag !== 'NEW')
+    .map((a) => `• ${TAG_LABEL[a.tag]}: ${plainText(a.component)}${a.why ? ` — ${plainText(a.why)}` : ''}`).join('\n');
+  const dependencies = s.dependencies.map((l) => `• ${plainText(l.replace(LIST_ITEM_RE, ''))}`).filter((l) => l.length > 2).join('\n');
+  const manual_steps = s.manualSteps.map((l, i) => `${i + 1}. ${plainText(l.replace(LIST_ITEM_RE, ''))}`).filter((l) => l.length > 3).join('\n');
+  return {
+    tags: s.assessments.map((a) => a.tag),
+    assessment, dependencies, manual_steps,
+    has: { assessment: !!assessment, dependencies: !!dependencies, manual_steps: !!manual_steps },
+    rest: s.rest,
+  };
+}
+
+/** The message without the machine blocks AND without the tagged sections (they travel in their own fields). */
+export function stripFindings(text) {
+  return splitSections(stripChangeset(text)).rest;
+}

@@ -8,6 +8,7 @@
 // final webhook can't be delivered (wait expired, conversation closed).
 import { config } from './config.js';
 import { logEvent } from './store.js';
+import { stripFindings } from './changeset.js';
 
 /** Removes anything that looks like a credential before text reaches the customer or Fin. */
 export function redactSecrets(text) {
@@ -46,7 +47,8 @@ export function brandScrub(text) {
 export function customerMessage(status, message) {
   const text = brandScrub(redactSecrets(message));
   const result = text.match(/RESULT:\s*\**\s*(SUCCEEDED|FAILED|NEEDS_INPUT)\s*(?:[-:–]\s*(.+))?/i);
-  const body = text.replace(/BEGIN_CHANGESET[\s\S]*?END_CHANGESET/g, '').replace(/^\s*RESULT:.*$/gim, '').replace(/\n{3,}/g, '\n\n').trim();
+  // ASSESSMENT / DEPENDENCIES / MANUAL_STEPS travel in their own webhook fields, so they are not repeated (or cut at 900 characters) here
+  const body = stripFindings(text).replace(/^\s*RESULT:.*$/gim, '').replace(/\n{3,}/g, '\n\n').trim();
   if (status === 'needs_input') {
     const q = result?.[2]?.trim();
     return q ? `Question: ${q}${body ? `\n\n${body}` : ''}` : body;
@@ -84,6 +86,9 @@ export async function notifyFin(req, { status, message, isTerminal, channel, ext
     changes: brandScrub(redactSecrets(extra.changes ?? '')).slice(0, 1500),                       // plain business language for the customer
     changes_technical: brandScrub(redactSecrets(extra.changes_technical ?? '')).slice(0, 1500),   // API names, only if the customer or an admin asks
     warnings: brandScrub(redactSecrets(extra.warnings ?? '')).slice(0, 600),
+    assessment: brandScrub(redactSecrets(extra.assessment ?? '')).slice(0, 1500),       // what is already done / redundant / in conflict (plain words)
+    dependencies: brandScrub(redactSecrets(extra.dependencies ?? '')).slice(0, 1500),   // what depends on what, with the planner's own completeness note
+    manual_steps: brandScrub(redactSecrets(extra.manual_steps ?? '')).slice(0, 1500),   // what a person must do themselves
     updated_at: new Date().toISOString(),
   };
 
@@ -106,8 +111,8 @@ export async function notifyFin(req, { status, message, isTerminal, channel, ext
   const needFallback = important && cb !== null && (!delivered || config.intercomReplyMode === 'always')
     || (isTerminal && !cb);
   if (needFallback && config.intercomToken && config.intercomAdminId && req.input.conversation_id) {
-    const head = { succeeded: 'completed', failed: 'not completed', plan_ready: 'plan ready for your approval', needs_input: 'question', rejected: 'cannot be done through chat', needs_review: 'needs a teammate to review' }[status] || status;
-    const body = [payload.message, payload.changes && `Planned changes:\n${payload.changes}`, payload.warnings].filter(Boolean).join('\n\n');
+    const head = { succeeded: 'completed', failed: 'not completed', plan_ready: 'plan ready for your approval', needs_input: 'question', rejected: 'cannot be done through chat', already_done: 'already set up', needs_review: 'needs a teammate to review' }[status] || status;
+    const body = [payload.message, payload.assessment && `What we found:\n${payload.assessment}`, payload.changes && `Planned changes:\n${payload.changes}`, payload.dependencies && `Dependencies:\n${payload.dependencies}`, payload.manual_steps && `Steps to do yourself:\n${payload.manual_steps}`, payload.warnings].filter(Boolean).join('\n\n');
     try {
       const r = await fetch(`${config.intercomApiBase}/conversations/${encodeURIComponent(req.input.conversation_id)}/reply`, {
         method: 'POST',

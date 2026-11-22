@@ -1,0 +1,15 @@
+Your org already blocks negative Opportunity Amounts at Closed Won, so we plan no changes. The active rule "Amount_Required_When_Closed_Won" is stricter than your request.
+
+ASSESSMENT: REDUNDANT - Opportunity validation rule (Amount cannot be negative when Closed Won) - The active rule "Amount_Required_When_Closed_Won" stops a save when the Stage is Closed Won and the Amount is blank, 0 or below 0. Its formula is `AND(ISPICKVAL(StageName, "Closed Won"), OR(ISBLANK(Amount), Amount <= 0))`. Users see the message "Enter an Amount before closing the deal." rather than "Amount cannot be negative."
+
+Your request says the Amount must be "at least 0", but the existing rule also blocks an Amount of exactly 0. If you want Closed Won deals with a 0 Amount to save, the existing rule needs to change, and we can plan that change if you ask.
+
+DEPENDENCIES:
+- ValidationRule: we found nothing that references Opportunity.Amount_Required_When_Closed_Won.
+- This list may be incomplete because the dependency lookup does not report every kind of reference to validation rules.
+
+BEGIN_CHANGESET
+[]
+END_CHANGESET
+
+RESULT: ALREADY_DONE - The active rule Opportunity.Amount_Required_When_Closed_Won already blocks negative (and zero or blank) Amounts at Closed Won.

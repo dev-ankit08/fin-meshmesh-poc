@@ -1,0 +1,24 @@
+We can't build this request through chat because it needs a new Apex class, and the secure connection it would use already exists in your org.
+
+ASSESSMENT: NEW - ApexClass PartnerCallout - The org has no class with this name.
+ASSESSMENT: ALREADY_DONE - NamedCredential Partner_API - It already points to https://api.partner.example.com, callouts are enabled, and it signs in through the Partner_API External Credential.
+ASSESSMENT: ALREADY_DONE - ExternalCredential Partner_API - It already exists and sends an X-API-Key header from the principal "PartnerApiPrincipal". Your admin enters the key value in Setup.
+
+DEPENDENCIES:
+- ApexClass: PartnerCallout (not yet built) would depend on NamedCredential Partner_API.
+- NamedCredential: Partner_API depends on ExternalCredential Partner_API.
+- ExternalCredential: Partner_API needs its principal granted through a permission set to whoever runs the callout.
+- This list may be incomplete: we didn't check which permission sets grant that principal access, or whether the API key has been entered.
+
+MANUAL_STEPS:
+1. Setup > Named Credentials > External Credentials > Partner API: check that "PartnerApiPrincipal" has its API key entered. Only your admin should enter it.
+2. Setup > Permission Sets: give External Credential Principal Access to "Partner API - PartnerApiPrincipal" and assign that permission set to the users who will run the callout.
+3. In a sandbox, a developer creates PartnerCallout. It should send a GET request to `callout:Partner_API` and return the response body. No Remote Site Setting is needed.
+4. The developer adds a test class that uses HttpCalloutMock, with at least 75% coverage.
+5. Deploy both classes to production through your normal release process.
+
+BEGIN_CHANGESET
+[]
+END_CHANGESET
+
+RESULT: FAILED - needs ApexClass, which cannot be changed through chat
