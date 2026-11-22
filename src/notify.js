@@ -81,7 +81,8 @@ export async function notifyFin(req, { status, message, isTerminal, channel, ext
     is_terminal: isTerminal ? 'true' : 'false',
     plan_version: req.plan_version || '',
     change_count: String(req.changes?.length ?? ''),
-    changes: brandScrub(redactSecrets(extra.changes ?? '')).slice(0, 1500),
+    changes: brandScrub(redactSecrets(extra.changes ?? '')).slice(0, 1500),                       // plain business language for the customer
+    changes_technical: brandScrub(redactSecrets(extra.changes_technical ?? '')).slice(0, 1500),   // API names, only if the customer or an admin asks
     warnings: brandScrub(redactSecrets(extra.warnings ?? '')).slice(0, 600),
     updated_at: new Date().toISOString(),
   };

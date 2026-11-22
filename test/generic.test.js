@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { parseChangeset, planVersion, formatChanges, stripChangeset } from '../src/changeset.js';
+import { parseChangeset, planVersion, formatChanges, formatChangesForCustomer, stripChangeset } from '../src/changeset.js';
 import { evaluatePolicy, loadPolicy, typeMatches } from '../src/policy.js';
 import { buildPlanPrompt, buildApprovalMessage } from '../src/prompt.js';
 import { validateRequest } from '../src/validate.js';
@@ -132,4 +132,58 @@ test('every prompt sent to the planner carries the voice rule', () => {
     assert.match(p, /Write as "we"/);
     assert.match(p, /shown to the customer/);
   }
+});
+
+// ---- plain-language plan (Phase 2, step 2). Shapes below are the real plans from live runs.
+const API_NAME = /__c\b|\bCustomField\b|\bPermissionSet\b|\bNamedCredential\b|\bExternalCredential\b|\bValidationRule\b|[A-Za-z]+-[A-Za-z]+ Layout/;
+
+test('plain plan: field + layout + permission set (live runs fmr_cb3f8628 / fmr_1219e7b4)', () => {
+  const plain = formatChangesForCustomer([
+    { action: 'create', type: 'CustomField', name: 'Contact.Preferred_Contact_Time__c', label: 'Preferred Contact Time', summary: 'New Text(255) field on Contact' },
+    { action: 'modify', type: 'Layout', name: 'Contact-Contact Layout', label: 'Contact Layout', summary: 'Add the field below Email' },
+    { action: 'modify', type: 'PermissionSet', name: 'Fin_PoC_Access', label: 'Fin PoC Access', summary: 'Grant Read and Edit field access on Contact.Preferred_Contact_Time__c' },
+  ]);
+  assert.equal(plain, [
+    '1. Add a text field called “Preferred Contact Time” to Contact',
+    '2. Show “Preferred Contact Time” on the “Contact Layout” page layout',
+    '3. Let “Fin PoC Access” read and edit “Preferred Contact Time”',
+  ].join('\n'));
+  assert.doesNotMatch(plain, API_NAME);
+});
+
+test('plain plan: outbound credentials (live run fmr_50551f28)', () => {
+  const plain = formatChangesForCustomer([
+    { action: 'create', type: 'ExternalCredential', name: 'Partner_API', label: 'Partner API', summary: 'Custom-auth external credential with Named Principal PartnerApiPrincipal sending X-API-Key header' },
+    { action: 'create', type: 'NamedCredential', name: 'Partner_API', label: 'Partner API', summary: 'Secured endpoint https://api.partner.example.com linked to External Credential Partner_API' },
+    { action: 'modify', type: 'PermissionSet', name: 'Fin_PoC_Access', label: 'Fin PoC Access', summary: 'Add principal access Partner_API-PartnerApiPrincipal and Read on UserExternalCredential' },
+  ]);
+  assert.equal(plain, [
+    '1. Create the “Partner API” sign-in settings for the outside service',
+    '2. Create the “Partner API” connection to https://api.partner.example.com',
+    '3. Let “Fin PoC Access” use the new connection',
+  ].join('\n'));
+  assert.doesNotMatch(plain, /Principal|X-API-Key/);
+});
+
+test('plain plan: validation rule, assignment, new permission set, unknown type', () => {
+  const plain = formatChangesForCustomer([
+    { action: 'create', type: 'ValidationRule', name: 'Opportunity.Amount_Required_When_Closed_Won', label: 'Amount_Required_When_Closed_Won', summary: 'Blocks saving a Closed Won Opportunity unless Amount is greater than zero' },
+    { action: 'assign', type: 'PermissionSetAssignment', name: 'Fin_PoC_Access:someone@example.com', label: 'Fin PoC Access', summary: 'assign' },
+    { action: 'create', type: 'PermissionSet', name: 'Contact_Language_Access', label: 'Contact Language Access', summary: 'Read/Edit' },
+    { action: 'create', type: 'CustomField', name: 'Contact.Language__c', label: 'Language', summary: 'Text(50)' },
+    { action: 'create', type: 'GlobalValueSet', name: 'Tier_Values', label: 'Tier Values', summary: 'Gold, Silver, Bronze' },
+  ]);
+  assert.match(plain, /^1\. Add a validation rule on Opportunity: Blocks saving a Closed Won Opportunity unless Amount is greater than zero$/m);
+  assert.match(plain, /^2\. Give someone@example\.com the “Fin PoC Access” permission set$/m);
+  assert.match(plain, /^3\. Create a permission set called “Contact Language Access” that lets people read and edit “Language”$/m);
+  assert.match(plain, /^5\. Add the “Tier Values” global value set: Gold, Silver, Bronze$/m);
+});
+
+test('plain plan never leaks API names for any allowed type, and the technical list is unchanged', () => {
+  const policy = loadPolicy();
+  const changes = policy.allowed_types.filter((t) => !t.includes('*')).map((t) => ({ action: 'create', type: t, name: `Thing_${t}`, label: 'Thing', summary: '' }));
+  const plain = formatChangesForCustomer(changes);
+  assert.equal(plain.split('\n').length, changes.length);
+  assert.doesNotMatch(plain, /__c\b|Thing_/);
+  assert.match(formatChanges(changes), /^1\. Create /); // technical form (used for the build) keeps API names
 });

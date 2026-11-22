@@ -12,7 +12,7 @@ import { config } from './config.js';
 import { updateRequest, getRequest, logEvent } from './store.js';
 import { notifyFin } from './notify.js';
 import * as mesh from './meshmesh.js';
-import { parseChangeset, planVersion, formatChanges, stripChangeset } from './changeset.js';
+import { parseChangeset, planVersion, formatChanges, formatChangesForCustomer, stripChangeset } from './changeset.js';
 import { loadPolicy, evaluatePolicy, describeBlocked } from './policy.js';
 import { buildPlanPrompt, buildApprovalMessage, buildRevisionMessage, CHANGESET_REMINDER } from './prompt.js';
 import { liveGuard, mockGuard } from './guard.js';
@@ -230,14 +230,15 @@ export async function reviewPlan(id, changes, planSummary) {
   const pol = evaluatePolicy(changes, policy, pre.existing);
   logEvent('plan_review', { request_id: id, changes, policy: pol, precheck: { ...pre, existing: [...pre.existing] } });
   const version = planVersion(changes);
-  const changesText = formatChanges(changes);
+  const changesText = formatChanges(changes);                 // technical: what the build is told to do, for admins
+  const changesPlain = formatChangesForCustomer(changes);     // plain business language: what the customer reads
   updateRequest(id, { changes, plan_version: version, plan_summary: planSummary.slice(0, 3000) });
 
   if (!pre.ok) {
-    return planEnd(id, 'rejected', `Reason: ${pre.conflicts.join('; ')}, so nothing was changed. Please choose a different name, or ask to update the existing component instead.`, { changes: changesText });
+    return planEnd(id, 'rejected', `Reason: ${pre.conflicts.join('; ')}, so nothing was changed. Please choose a different name, or ask to update the existing component instead.`, { changes: changesPlain, changes_technical: changesText });
   }
   if (!pol.ok) {
-    return planEnd(id, 'rejected', `Reason: part of this request can't be done through chat (${describeBlocked(pol.blocked)}). Nothing was changed in Salesforce. A teammate or your Salesforce admin can help with that part.`, { changes: changesText });
+    return planEnd(id, 'rejected', `Reason: part of this request can't be done through chat (${describeBlocked(pol.blocked)}). Nothing was changed in Salesforce. A teammate or your Salesforce admin can help with that part.`, { changes: changesPlain, changes_technical: changesText });
   }
   const warnings = [...pol.warnings, ...pre.notes].join(' ');
   if (!g) logEvent('guard_disabled', { request_id: id });
@@ -247,7 +248,7 @@ export async function reviewPlan(id, changes, planSummary) {
   }
   const expires = new Date(Date.now() + config.planTtlMinutes * 60_000).toISOString();
   return setStatus(id, 'plan_ready', `${planSummary.slice(0, 700)}`.trim() || "We've prepared a plan.", {
-    channel: 'plan', extra: { changes: changesText, warnings }, patch: { plan_expires_at: expires },
+    channel: 'plan', extra: { changes: changesPlain, changes_technical: changesText, warnings }, patch: { plan_expires_at: expires },
   });
 }
 
