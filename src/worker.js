@@ -43,6 +43,15 @@ export function outcomeOf(message) {
   return m ? m[1].toLowerCase() : null;
 }
 
+/** Customer-safe text from a MeshMesh message: no CHANGESET block, no "RESULT:" line. */
+export function cleanMessage(message) {
+  return stripChangeset(String(message))
+    .replace(/BEGIN_CHANGESET[\s\S]*?END_CHANGESET/g, '')
+    .replace(/^\s*\**RESULT:.*$/gim, '')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+}
+
 export function normaliseStatus({ json, text = '' }) {
   const j = json || {};
   const status = String(j.status ?? j.state ?? '').toLowerCase();
@@ -110,6 +119,21 @@ async function readPlan(agentId, n) {
   return { parsed, planText };
 }
 
+export const isTryAgain = (e) => /try again|not available|temporarily/i.test(String(e?.message || ''));
+
+export async function retryableStart(fn, id, { delays = [10_000, 30_000, 60_000], sleep } = {}) {
+  let lastErr;
+  for (let i = 0; i <= delays.length; i++) {
+    try { return await fn(); } catch (e) {
+      lastErr = e;
+      if (!isTryAgain(e) || i === delays.length) throw e;
+      logEvent('start_agent_retry', { request_id: id, attempt: i + 1, error: e.message.slice(0, 200) });
+      await (sleep ? sleep(delays[i]) : new Promise((r) => setTimeout(r, delays[i])));
+    }
+  }
+  throw lastErr;
+}
+
 // ------------------------------------------------------------------ PLAN
 
 export async function runPlan(id, { revision } = {}) {
@@ -124,7 +148,8 @@ export async function runPlan(id, { revision } = {}) {
       const args = { name: `Fin ${id}: ${req.input.title}`.slice(0, 100), prompt: buildPlanPrompt(req.input, id, policy), mode: 'plan' };
       const connId = req.input.connection_id || config.meshmeshConnectionId;
       if (connId) args.connectionIds = [connId];
-      const started = await meshApi.callTool('start_agent', args);
+      // "Sandbox not available - please try again" is MeshMesh saying nothing was started, so repeating is safe.
+      const started = await retryableStart(() => meshApi.callTool('start_agent', args), id);
       agentId = started.json?.agentId ?? started.json?.id ?? (started.text.match(/[A-Za-z0-9_-]{12,}/) || [])[0];
       if (!agentId) throw new Error(`start_agent returned no agentId: ${started.text.slice(0, 300)}`);
       updateRequest(id, { agent_id: agentId }, `MeshMesh agent started: ${agentId}`);
@@ -160,7 +185,11 @@ async function handlePlanTurn(id, agentId, n, deadline) {
   if (n.status === 'needs_connection') return planEnd(id, 'failed', 'Reason: MeshMesh has no usable connection to your Salesforce org. Nothing was changed.');
   updateRequest(id, { last_plan_message: n.summary });
 
-  if (n.outcome === 'failed') return planEnd(id, 'failed', n.summary);
+  if (n.outcome === 'failed') {
+    // MeshMesh declined in the plan turn (e.g. needs Apex/Flow): nothing was built, so this is a rejection, not an outage.
+    const why = cleanMessage(n.summary) || 'MeshMesh could not plan this request through chat.';
+    return planEnd(id, 'rejected', `Reason: ${why}\n\nNothing was changed in Salesforce.`);
+  }
   if (n.outcome === 'needs_input' || n.status === 'needs_input') {
     return setStatusNeedsInput(id, n.summary);
   }

@@ -26,7 +26,7 @@ export function redactSecrets(text) {
 export function customerMessage(status, message) {
   const text = redactSecrets(message);
   const result = text.match(/RESULT:\s*\**\s*(SUCCEEDED|FAILED|NEEDS_INPUT)\s*(?:[-:–]\s*(.+))?/i);
-  const body = text.replace(/^\s*RESULT:.*$/gim, '').replace(/\n{3,}/g, '\n\n').trim();
+  const body = text.replace(/BEGIN_CHANGESET[\s\S]*?END_CHANGESET/g, '').replace(/^\s*RESULT:.*$/gim, '').replace(/\n{3,}/g, '\n\n').trim();
   if (status === 'needs_input') {
     const q = result?.[2]?.trim();
     return q ? `Question: ${q}${body ? `\n\n${body}` : ''}` : body;
