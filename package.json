@@ -1,0 +1,16 @@
+{
+  "name": "fin-meshmesh-bridge",
+  "version": "0.1.0",
+  "private": true,
+  "description": "PoC bridge: Intercom Fin -> MeshMesh (MCP) -> Salesforce, with status pushed back to Fin",
+  "type": "module",
+  "engines": { "node": ">=20.12" },
+  "scripts": {
+    "start": "node src/server.js",
+    "probe": "node scripts/mcp-probe.js",
+    "test": "node --test test/validate.test.js"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.17.0"
+  }
+}
