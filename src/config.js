@@ -33,6 +33,9 @@ export const config = {
   // Independent read-only Salesforce guard (Salesforce CLI alias of the target org)
   sfTargetOrg: env('SF_TARGET_ORG', ''),
   sfGuard: env('SF_GUARD', 'true') === 'true',
+  // Duplicate pre-check before MeshMesh runs. Set false ONLY for controlled-failure tests
+  // (lets MeshMesh itself detect and report the duplicate); post-verify stays on via SF_GUARD.
+  sfPrecheck: env('SF_PRECHECK', 'true') === 'true',
 
   dataDir: path.join(ROOT, 'data'),
 };

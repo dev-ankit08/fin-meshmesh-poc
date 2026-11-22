@@ -6,7 +6,9 @@
 - **What made the live Messenger work:** the Procedure channel changed from Salesforce Cases to **Web**, and the audience "Fin PoC tester" matches **jane.doe@test.com** (the identity Intercom sees for the site visitor).
 - **Clean-up:** the Procedure is back to **Disabled**. The audience and channel are left as is for future tests.
 - **Ops note:** the cloudflared quick tunnel dropped once (530) and its URL changed. Use a hosted endpoint beyond the PoC.
-- Full details: `Fin-MeshMesh-Technical-Guide.md` §7.1b, §7.2 (T7/T8), §8.
+- **MeshMesh-reported failure, live (T9):** with the bridge pre-check off (`SF_PRECHECK=false`), MeshMesh itself detected the duplicate and returned `RESULT: FAILED`. Fin showed "not completed" with no false success. It first invented a cause, which was fixed by putting a `Reason:` line first in the bridge's message and tightening the failed-branch instruction. The re-test quoted the real reason. The pre-check is back on and the Procedure is Disabled.
+- **One-page readout** with risks and dependencies: `docs/Fin-MeshMesh-PoC-Readout.md`.
+- Full details: `Fin-MeshMesh-Technical-Guide.md` §7.1b, §7.2 (T7–T9), §8.
 
 ## Progress log (2026-11-21)
 

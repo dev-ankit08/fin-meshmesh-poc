@@ -4,12 +4,28 @@
 import { config } from './config.js';
 import { logEvent } from './store.js';
 
+/**
+ * Customer-facing message for Fin: removes MeshMesh's technical "RESULT: ..." line and, for
+ * failures, leads with an explicit "Reason: ..." sentence so Fin relays the real cause
+ * instead of inventing one (seen in the live failure test, fmr_251a4833).
+ */
+export function customerMessage(status, message) {
+  const text = String(message || '');
+  const result = text.match(/RESULT:\s*(SUCCEEDED|FAILED)\s*(?:[-:–]\s*(.+))?/i);
+  const body = text.replace(/^\s*RESULT:.*$/gim, '').replace(/\n{3,}/g, '\n\n').trim();
+  if (status !== 'failed') return body;
+  const reason = result?.[2]?.trim();
+  // Don't claim "nothing changed" here: a mid-build failure can leave partial changes.
+  const lead = reason ? `Reason: ${reason}.` : 'Reason: see details below.';
+  return body ? `${lead}\n\n${body}` : lead;
+}
+
 export async function notifyFin(req, { status, message, isTerminal }) {
   const payload = {
     request_id: req.request_id,
     agent_id: req.agent_id || '',
     status,                       // accepted | planning | building | succeeded | failed
-    message: String(message || '').slice(0, 900),
+    message: customerMessage(status, message).slice(0, 900),
     is_terminal: isTerminal ? 'true' : 'false',
     updated_at: new Date().toISOString(),
   };

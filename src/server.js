@@ -81,7 +81,7 @@ const server = http.createServer(async (req, res) => {
           });
         }
         // Independent duplicate guard (read-only describe) - runs BEFORE MeshMesh is involved.
-        const guardOn = config.sfGuard && config.sfTargetOrg && config.meshmeshMode === 'live';
+        const guardOn = config.sfGuard && config.sfPrecheck && config.sfTargetOrg && config.meshmeshMode === 'live';
         if (guardOn) {
           let dup;
           try {

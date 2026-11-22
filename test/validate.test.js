@@ -56,3 +56,18 @@ test('status mapping matches the observed MeshMesh shape', () => {
   const plan = normaliseStatus({ json: { status: 'waiting', isExecuting: false, waitingFor: '', ...msg("I'll verify all three items before reporting SUCCEEDED or FAILED. Click Begin Build.") } });
   assert.equal(plan.outcome, null);
 });
+
+import { customerMessage } from '../src/notify.js';
+
+test('failure message leads with the real reason and drops the RESULT line', () => {
+  const raw = 'I stopped without building anything because Account already has a field called "Account Health Score".\n\nRESULT: FAILED - duplicate field';
+  const m = customerMessage('failed', raw);
+  assert.match(m, /^Reason: duplicate field\./);
+  assert.match(m, /already has a field called "Account Health Score"/);
+  assert.doesNotMatch(m, /RESULT:/);
+});
+
+test('success message drops the RESULT line without adding a reason', () => {
+  const m = customerMessage('succeeded', 'Created the field.\n\nRESULT: SUCCEEDED');
+  assert.equal(m, 'Created the field.');
+});

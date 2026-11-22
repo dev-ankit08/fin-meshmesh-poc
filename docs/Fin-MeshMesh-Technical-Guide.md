@@ -187,6 +187,7 @@ The bridge does not trust MeshMesh alone for safety or for the result. It runs i
    sf org login web --instance-url https://<your-my-domain>.my.salesforce.com --alias devhub
    ```
    Then set `SF_TARGET_ORG=devhub` and `SF_GUARD=true` in `.env`.
+   - `SF_PRECHECK=true` (default) runs the duplicate pre-check. Set it to `false` **only** for a controlled-failure test where MeshMesh itself should detect the duplicate (T9). Post-verification stays on through `SF_GUARD`. Restart the bridge after changing it, and set it back to `true`.
 2. **Pre-check (in `POST /requests`)**, before MeshMesh is called:
    - Query the Tooling API: `SELECT QualifiedApiName, Label, DataType FROM FieldDefinition WHERE EntityDefinition.QualifiedApiName = 'Account'`.
    - If a field with the same **API name or label** already exists, return `accepted:false` with `problems:"duplicate_field: …"` and a customer-friendly `message`. Nothing is sent to MeshMesh, and nothing changes in Salesforce.
@@ -266,7 +267,7 @@ Path: **Fin AI Agent → Train → Procedures → + New procedure → Create fro
    7. When the first MeshMesh status update arrives, relay its message as a short progress update and say the final result will follow. This update is never the final result. Then wait using **`@` → Wait for webhook** (#2, final result).
    8. **Condition step** (type `/` → **Condition**, then switch the format to **Code**, so branches are decided by exact Python evaluation, not by the AI):
       - **IF** `inputs["webhook"]["meshmesh_result"]["status"] == "succeeded"` → Instruction: confirm the configuration is complete and independently verified, summarise the result, and give the next step (assign the permission set to users).
-      - **ELSE IF** `inputs["webhook"]["meshmesh_result"]["status"] == "failed"` → Instruction: say it did NOT complete and the change was not made, give the reason, and offer a teammate.
+      - **ELSE IF** `inputs["webhook"]["meshmesh_result"]["status"] == "failed"` → Instruction: say it did NOT complete and the change was not made, give the reason, and offer a teammate. Add: *"Use only the reason written in the meshmesh_result message (it starts with "Reason:"); never guess or invent a cause such as a deployment error."* Without this, Fin made up a cause in test T9.
       - **ELSE** → Instruction: say the result can't be confirmed yet, a teammate will verify, then hand off to the team.
 
       Use the condition panel's **Test** button: `succeeded` → True, `preview` → False (both verified in the PoC).
@@ -310,6 +311,7 @@ Path: **Fin AI Agent → Train → Procedures → + New procedure → Create fro
 | T6 | Invalid input at connector level | `accepted:false` with `problems` | **Pass** (live connector test) |
 | T7 | **Live Messenger** happy path (FIN Agent site, visitor identified as jane.doe@test.com) | Request ID → progress → real final message | **Pass** (22 Nov). `fmr_b323a19e` Account Health Score, Number: Fin showed the request ID, then "planning", and about 4.5 minutes later the final message "The Salesforce configuration is now complete and has been independently verified…" from the Code Condition's *succeeded* branch. Final webhook HTTP 200. |
 | T8 | **Live Messenger** duplicate (`PoC Customer Tier`) | Refused, no change | **Pass** (22 Nov). The bridge guard rejected it (`precheck_duplicate`), and Fin asked for a different label. The field is still Text(50). |
+| T9 | **Live Messenger, failure reported by MeshMesh itself** (pre-check off with `SF_PRECHECK=false`; duplicate of `Account Health Score`, Number, so even a wrong redeploy would be identical and harmless) | MeshMesh reports FAILED; Fin says not done, gives the real reason, no false success | **Pass** after one fix (22 Nov). `fmr_251a4833`: MeshMesh stopped in planning with `RESULT: FAILED - duplicate field`, final webhook 200, and Fin took the *failed* branch, **but it invented the cause** ("error during the final deployment phase"). Fix: the bridge now starts failure messages with `Reason: …` and drops the `RESULT:` line (`customerMessage()` in `src/notify.js`), and the failed-branch instruction says to use only that reason. Re-test `fmr_7c4cc1d5`: Fin said *"The requested field label 'Account Health Score' already exists on the Account object."* The field is unchanged (LastModifiedDate is still its creation time). The pre-check is back on. |
 
 ### 7.1b Running a live Messenger test (how the final result was shown)
 Preview can't deliver the second webhook, so the final result was shown in a real Messenger conversation:
@@ -348,6 +350,8 @@ Expect about **4–5 minutes** between "Yes" and the final message: plan, then b
 | `fmr_78112c70` | **Fin** (after fixes) | Onboarding Owner, Text | progress webhook 200; Preview final → Code Condition ELSE ("cannot confirm yet"), not a false success | `RESULT: SUCCEEDED` + **bridge post-verify ok** | ✅ `Onboarding_Owner__c` Text(100) + Fin PoC Access Read/Edit (checked by the bridge's independent query) |
 | `fmr_b323a19e` (22 Nov) | **Fin live Messenger** (FIN Agent site) | Account Health Score, Number | progress webhook **200**, final webhook **200**; Fin showed the real final success message | `RESULT: SUCCEEDED` (~4.5 min) + post-verify ok | ✅ `Account_Health_Score__c` Number(18,0); Fin PoC Access Read ✓ Edit ✓ |
 | `precheck` (22 Nov) | **Fin live Messenger**: duplicate "PoC Customer Tier" | already exists | rejected by the guard | not run | ✅ unchanged, Text(50) |
+| `fmr_251a4833` (22 Nov) | **Fin live Messenger**, pre-check off: duplicate "Account Health Score" | already exists | progress 200, final 200 (failed) | `RESULT: FAILED - duplicate field` (in planning, ~45 s) | ✅ unchanged. ⚠️ Fin invented the cause; fixed |
+| `fmr_7c4cc1d5` (22 Nov) | same, after the reason fix | already exists | progress 200, final 200 (failed) | `RESULT: FAILED - duplicate field` | ✅ unchanged; Fin quoted the real reason |
 
 > **Key risk found (T4).** MeshMesh's read-only discovery gave a false "does not exist" for an existing custom field, and the metadata deploy then silently **overwrote** the field definition. Widening a field is harmless, but narrowing it, or changing its type, could truncate or lose data. Recommendations:
 > 1. Add an **independent pre-check** in the bridge: a read-only Salesforce describe through its own integration user, or a separate read-only MeshMesh research run whose result the bridge parses. Reject duplicates before any build.
@@ -357,6 +361,8 @@ Expect about **4–5 minutes** between "Yes" and the final message: plan, then b
 **What this proves:**
 - POC-01 (collect inputs), POC-02 (validate and refuse incomplete or unsupported input), POC-03 (connections), POC-04 (hand-off with request ID), POC-05 (execution, verified in Salesforce) and POC-06 (at least one real intermediate status shown in Fin) all pass **through Fin**.
 - POC-07 and POC-08 (final status in Fin) **pass end to end in the live Messenger** (T7, T8 on 22 Nov). Intercom Preview cannot show them, because it doesn't deliver the second webhook, and in early Preview runs Fin made up a success message. The deterministic Code Condition on `meshmesh_result.status` (§6 step 8) prevents that: Preview now falls through to "can't confirm yet".
+
+A MeshMesh-reported failure (not just the bridge's pre-check) was also shown live in T9, and Fin relayed the real reason after the fix. See the one-page **[Readout](Fin-MeshMesh-PoC-Readout.md)** for the summary, risks and dependencies.
 
 **Recommendation: Proceed (iterate on hardening).** The full loop works: Fin conversation → bridge → MeshMesh → Salesforce → verified final status in Fin, with failures blocked before any change. MeshMesh's own duplicate detection was unreliable (T4), so the independent Salesforce guard and post-verify in the bridge are **required**, not optional. Before a pilot: host the bridge, use least-privilege identities, and raise the discovery/upsert issue with MeshMesh (§11).
 
