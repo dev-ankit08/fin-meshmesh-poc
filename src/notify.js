@@ -83,8 +83,8 @@ export async function notifyFin(req, { status, message, isTerminal, channel, ext
     is_terminal: isTerminal ? 'true' : 'false',
     plan_version: req.plan_version || '',
     change_count: String(req.changes?.length ?? ''),
-    changes: brandScrub(redactSecrets(extra.changes ?? '')).slice(0, 1500),                       // plain business language for the customer
-    changes_technical: brandScrub(redactSecrets(extra.changes_technical ?? '')).slice(0, 1500),   // API names, only if the customer or an admin asks
+    changes: brandScrub(redactSecrets(extra.changes ?? '')).slice(0, 1500),                 // technical list with API names (what Fin shows)
+    changes_plain: brandScrub(redactSecrets(extra.changes_plain ?? '')).slice(0, 1500),     // the same changes in plain business language (optional)
     warnings: brandScrub(redactSecrets(extra.warnings ?? '')).slice(0, 600),
     assessment: brandScrub(redactSecrets(extra.assessment ?? '')).slice(0, 1500),       // what is already done / redundant / in conflict (plain words)
     dependencies: brandScrub(redactSecrets(extra.dependencies ?? '')).slice(0, 1500),   // what depends on what, with the planner's own completeness note

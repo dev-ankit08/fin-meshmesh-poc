@@ -69,11 +69,10 @@ test('generic happy path: outbound HTTPS setup -> plan -> customer approves -> b
   assert.equal(r.code, 202); assert.equal(r.body.approval, 'customer');
   const plan = await hook(`plan_${k}`);
   assert.equal(plan.status, 'plan_ready');
-  assert.match(plan.changes, /Create the “Partner API” connection to https:\/\/api\.example\.com/);
-  assert.match(plan.changes, /sign-in settings for the outside service/);
-  assert.doesNotMatch(plan.changes, /NamedCredential|ExternalCredential|__c|PermissionSet\b/); // plain language only
-  assert.match(plan.changes_technical, /Create NamedCredential Partner_API/);
-  assert.match(plan.changes_technical, /Create ExternalCredential/);
+  assert.match(plan.changes, /Create NamedCredential Partner_API/);   // technical list (API names) is what Fin shows
+  assert.match(plan.changes, /Create ExternalCredential/);
+  assert.match(plan.changes_plain, /Create the “Partner API” connection to https:\/\/api\.example\.com/);   // plain version kept as an optional extra
+  assert.match(plan.changes_plain, /sign-in settings for the outside service/);
   assert.match(plan.warnings, /not entered through chat/);
   assert.ok(plan.plan_version.startsWith('pv_'));
 
@@ -96,8 +95,8 @@ test('External Client App request is planned with its OAuth settings components'
   const r = await call('/requests', { ...base, change_request: 'Create an External Client App so our ERP can call Salesforce with OAuth client credentials', plan_callback_url: url(`plan_${k}`) });
   const plan = await hook(`plan_${k}`);
   assert.equal(plan.status, 'plan_ready', plan.message);
-  assert.match(plan.changes, /Create the “Fin Integration” app that outside systems use to sign in to Salesforce/);
-  assert.match(plan.changes_technical, /ExternalClientApplication Fin_Integration/);
+  assert.match(plan.changes, /ExternalClientApplication Fin_Integration/);
+  assert.match(plan.changes_plain, /Create the “Fin Integration” app that outside systems use to sign in to Salesforce/);
   assert.match(plan.warnings, /never shown in chat/);
   const c = await call('/requests/decision', { request_id: r.body.request_id, decision: 'cancel' });
   assert.equal(c.body.status, 'cancelled');
@@ -131,8 +130,8 @@ test('MeshMesh question -> customer answers (revise) -> new plan', async () => {
   assert.equal(rv.code, 202);
   const p2 = await hook(`plan2_${k}`);
   assert.equal(p2.status, 'plan_ready');
-  assert.match(p2.changes, /Add a validation rule on Account: Industry required when Type = Customer/);
-  assert.match(p2.changes_technical, /ValidationRule Account\.Require_Industry/);
+  assert.match(p2.changes, /ValidationRule Account\.Require_Industry/);
+  assert.match(p2.changes_plain, /Add a validation rule on Account: Industry required when Type = Customer/);
 });
 
 test('legacy single-field connector still works (auto-approve, two webhooks)', async () => {
