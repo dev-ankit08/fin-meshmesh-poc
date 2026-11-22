@@ -71,6 +71,26 @@ async function permSetAssigned(name, org) {
   return { checked: true, exists: rows.length > 0 };
 }
 
+/**
+ * A permission set's field grants do not bump its LastModifiedDate, so "the set exists" proves nothing.
+ * For every field this change set creates, check the set really has the access its summary promises.
+ * Returns null when there is nothing checkable (the caller then says so instead of claiming it was verified).
+ */
+async function checkFieldGrants(change, changes, org) {
+  const fields = changes.filter((x) => lc(x.type) === 'customfield' && x.action === 'create').map((x) => x.name);
+  if (!fields.length || !/read|edit|field|access|grant/i.test(`${change.summary || ''} ${change.label || ''}`)) return null;
+  const needEdit = /edit/i.test(change.summary || '');
+  const problems = []; const ok = [];
+  for (const f of fields) {
+    const rows = await soql(`SELECT Field, PermissionsRead, PermissionsEdit FROM FieldPermissions WHERE Parent.Name = '${esc(change.name)}' AND Field = '${esc(f)}'`, org);
+    const r = rows[0];
+    if (!r || !r.PermissionsRead) problems.push(`${change.name} has no read access to ${f}`);
+    else if (needEdit && !r.PermissionsEdit) problems.push(`${change.name} can read ${f} but not edit it`);
+    else ok.push(`${f} ${r.PermissionsEdit ? 'read+edit' : 'read'}`);
+  }
+  return { problems, ok };
+}
+
 const typesOf = (changes) => [...new Set(changes.map((c) => c.type).filter((t) => !FOLDERED.has(lc(t)) && !DATA_TYPES.has(lc(t))))];
 
 async function listAll(types, org) {
@@ -154,6 +174,17 @@ export async function verify(changes, before, org = config.sfTargetOrg) {
     const now = list.get(lc(c.name));
     if (!now) { problems.push(`${c.type} ${c.name} was not found in the org`); continue; }
     const was = before?.snap?.[lc(c.type)]?.[lc(c.name)];
+    if (lc(c.type) === 'permissionset') {
+      const g = await checkFieldGrants(c, changes, org);
+      if (g) {
+        problems.push(...g.problems);
+        if (!g.problems.length) verified.push(`${c.type} ${c.name} (field access ok: ${g.ok.join(', ')})`);
+        continue;
+      }
+      // Nothing we can prove (e.g. credential principal access): say so rather than claiming it was verified.
+      verified.push(`${c.type} ${c.name} (exists; grants not auto-checked)`);
+      continue;
+    }
     if (c.action === 'modify' && was && was === now.lastModifiedDate) {
       // Not a failure on its own (some types don't bump lastModifiedDate for every sub-change), but say so.
       verified.push(`${c.type} ${c.name} (exists; no new modification timestamp)`);

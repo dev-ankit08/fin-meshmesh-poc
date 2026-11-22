@@ -47,6 +47,7 @@ function fakeOrg(beforeState, afterState) {
   const fn = async (args) => {
     const t = (args.match(/--metadata-type (\w+)/) || [])[1];
     if (t) return Object.entries(state[t] || {}).map(([fullName, lastModifiedDate]) => ({ fullName, lastModifiedDate }));
+    if (/FROM FieldPermissions/.test(args)) return { records: state.fieldPerms || [] };
     if (/FieldDefinition/.test(args)) return { records: [{ QualifiedApiName: 'Name', Label: 'Account Name' }, { QualifiedApiName: 'PoC_Customer_Tier__c', Label: 'PoC Customer Tier' }] };
     return { records: [] };
   };
@@ -72,6 +73,7 @@ const ORG_AFTER = {
   CustomField: { ...ORG_BEFORE.CustomField, 'Account.Renewal_Risk_2__c': 't1' },
   Layout: { 'Account-Account Layout': 't1' },
   PermissionSet: { Fin_PoC_Access: 't1' },
+  fieldPerms: [{ Field: 'Account.Renewal_Risk_2__c', PermissionsRead: true, PermissionsEdit: true }],
 };
 
 function newRequest(extra = {}) {
@@ -118,6 +120,23 @@ test('live: MeshMesh claims success but a component is missing -> failed', async
   const r = await planThenBuild(mesh, fakeOrg(ORG_BEFORE, after));
   assert.equal(r.status, 'failed');
   assert.match(r.last_message, /^Reason: MeshMesh reported success, but .*Renewal_Risk_2__c was not found/);
+});
+
+test('live: MeshMesh claims success but the permission set never got the field access -> failed (T14 finding)', async () => {
+  const mesh = fakeMesh([[msg(PLAN)], [busy('execution'), msg('Done.\nRESULT: SUCCEEDED')]]);
+  // field, layout and permission set all exist, but the FieldPermissions row is missing
+  const after = { ...ORG_AFTER, fieldPerms: [] };
+  const r = await planThenBuild(mesh, fakeOrg(ORG_BEFORE, after));
+  assert.equal(r.status, 'failed');
+  assert.match(r.last_message, /Fin_PoC_Access has no read access to Account\.Renewal_Risk_2__c/);
+});
+
+test('live: permission set can read but not edit although Edit was promised -> failed', async () => {
+  const mesh = fakeMesh([[msg(PLAN)], [busy('execution'), msg('Done.\nRESULT: SUCCEEDED')]]);
+  const after = { ...ORG_AFTER, fieldPerms: [{ Field: 'Account.Renewal_Risk_2__c', PermissionsRead: true, PermissionsEdit: false }] };
+  const r = await planThenBuild(mesh, fakeOrg(ORG_BEFORE, after));
+  assert.equal(r.status, 'failed');
+  assert.match(r.last_message, /can read Account\.Renewal_Risk_2__c but not edit it/);
 });
 
 test('live: plan creates a field whose LABEL already exists -> rejected before approval', async () => {
