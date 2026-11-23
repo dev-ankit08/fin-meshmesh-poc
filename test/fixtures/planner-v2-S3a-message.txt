@@ -1,0 +1,5 @@
+I need you to choose how to handle the existing "Partner API" connection, so the change list in the saved plan is empty and nothing in your org has been changed. That connection already points to api.partner.example.com, but it signs in with a fixed API key instead of OAuth client credentials. We found no code, automation or user access that uses it today, so switching it to OAuth with the partner's token address (auth.partner.example.com/token) is our recommendation.
+
+The alternative is to keep it and add a second, separate OAuth connection to the same partner. Either way, your admin enters the partner's client ID and secret in Setup.
+
+RESULT: NEEDS_INPUT - Your existing "Partner API" connection to api.partner.example.com uses an API key: should we switch it to OAuth client credentials, or keep it and add a separate OAuth connection?

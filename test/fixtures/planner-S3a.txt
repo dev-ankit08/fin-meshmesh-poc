@@ -1,0 +1,7 @@
+Your org already has a "Partner API" connection to `https://api.partner.example.com`, but it signs in with an API key rather than OAuth, so we need your decision before changing anything. The saved plan's default adds a separate "Partner API OAuth" connection and leaves the current one alone; your admin would enter the client ID and secret in Setup and assign the new access permission set.
+
+BEGIN_CHANGESET
+[{"action":"create","type":"ExternalCredential","name":"Partner_API_OAuth","label":"Partner API OAuth","summary":"OAuth 2.0 client-credentials External Credential with token endpoint https://auth.partner.example.com/token and named principal PartnerApiOAuthPrincipal"},{"action":"create","type":"NamedCredential","name":"Partner_API_OAuth","label":"Partner API OAuth","summary":"Secured endpoint https://api.partner.example.com using External Credential Partner_API_OAuth with automatic Authorization header"},{"action":"create","type":"PermissionSet","name":"Partner_API_OAuth_Access","label":"Partner API OAuth Access","summary":"Grants access to principal Partner_API_OAuth-PartnerApiOAuthPrincipal and User External Credential records"}]
+END_CHANGESET
+
+RESULT: NEEDS_INPUT - Your existing "Partner API" connection already calls https://api.partner.example.com with an API key: should we switch it to OAuth client credentials (ending API-key access) or add a separate "Partner API OAuth" connection alongside it?
