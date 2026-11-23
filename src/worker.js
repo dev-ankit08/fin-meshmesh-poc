@@ -10,7 +10,7 @@
 // pre-check pass, because the customer already confirmed Fin's summary (the original PoC behaviour).
 import { config } from './config.js';
 import { updateRequest, getRequest, logEvent } from './store.js';
-import { notifyFin } from './notify.js';
+import { notifyFin, notifyStage } from './notify.js';
 import * as mesh from './meshmesh.js';
 import { parseChangeset, planVersion, formatChanges, formatChangesForCustomer, stripChangeset, parsePlannerFindings, stripFindings } from './changeset.js';
 import { loadPolicy, evaluatePolicy, describeBlocked } from './policy.js';
@@ -111,7 +111,7 @@ const approvalMode = (req) => (req.input.plan_callback_url ? 'customer' : 'auto'
  * started, so a stale "turn complete" from the previous turn is not mistaken for this one.
  * Calls onConfirm() for per-step confirmations. Returns the normalised status of the finished turn.
  */
-async function waitForTurn(id, agentId, { deadline, prevMessage = '', onConfirm }) {
+async function waitForTurn(id, agentId, { deadline, prevMessage = '', onConfirm, onProgress }) {
   let lastSeen = '';
   let sawWork = false;
   let stalePolls = 0;
@@ -119,6 +119,7 @@ async function waitForTurn(id, agentId, { deadline, prevMessage = '', onConfirm 
     await sleep(config.pollIntervalMs);
     const st = await meshApi.callTool('get_agent_status', { agentId });
     const n = normaliseStatus(st);
+    if (onProgress) await onProgress(st.json).catch((e) => logEvent('progress_error', { request_id: id, error: e.message }));
     const fp = `${n.status}|${n.summary.slice(0, 120)}`;
     if (fp !== lastSeen) logEvent('meshmesh_status', { request_id: id, agentId, ...n, raw: st.json ?? st.text.slice(0, 1500) });
     lastSeen = fp;
@@ -259,7 +260,8 @@ export async function reviewPlan(id, changes, planSummary, findingExtra = {}) {
       return planEnd(id, 'rejected', 'Reason: the Salesforce safety check is unavailable, so the plan was not run. Nothing was changed in Salesforce.');
     }
   }
-  const pol = evaluatePolicy(changes, policy, pre.existing);
+  const kind = hasCode(changes) && policy.code_enabled === true ? await (g?.orgKind ? g.orgKind(orgOf(req)) : Promise.resolve('unknown')) : undefined;
+  const pol = evaluatePolicy(changes, policy, pre.existing, { orgKind: kind });
   logEvent('plan_review', { request_id: id, changes, policy: pol, precheck: { ...pre, existing: [...pre.existing] } });
   const version = planVersion(changes);
   const changesText = formatChanges(changes);                 // technical (API names): what the build is told to do, and what customers see
@@ -299,7 +301,7 @@ export async function runBuild(id, approvedVersion) {
       logEvent('snapshot', { request_id: id, types: before.types, counts: Object.fromEntries(Object.entries(before.snap).map(([k, v]) => [k, Object.keys(v).length])) });
     }
     updateRequest(id, { approved_version: approvedVersion, approved_at: new Date().toISOString() });
-    await meshApi.callTool('continue_agent', { agentId: req.agent_id, message: buildApprovalMessage(approvedVersion, formatChanges(req.changes), { smart: smartOn(req) }), mode: 'build' });
+    await meshApi.callTool('continue_agent', { agentId: req.agent_id, message: buildApprovalMessage(approvedVersion, formatChanges(req.changes), { smart: smartOn(req), code: hasCode(req.changes) }), mode: 'build' });
     await setStatus(id, 'building', "Plan approved. We're applying your changes now.");
 
     let asked = false;
@@ -307,6 +309,7 @@ export async function runBuild(id, approvedVersion) {
     for (;;) {
       const n = await waitForTurn(id, req.agent_id, {
         deadline, prevMessage: prev,
+        onProgress: stageReporter(id),
         onConfirm: async () => {
           await meshApi.callTool('continue_agent', { agentId: req.agent_id, message: 'Confirmed. Proceed with this step only if it is within the approved component list.' });
           await setStatus(id, 'building', "We're applying the changes to Salesforce.");
@@ -319,10 +322,11 @@ export async function runBuild(id, approvedVersion) {
       if (n.outcome === 'failed') return final(id, 'failed', n.summary);
       if (n.outcome === 'succeeded') {
         if (!g) return final(id, 'succeeded', `${n.summary}\n\n(Independent Salesforce check is disabled.)`);
-        const check = await g.verify(req.changes, before, orgOf(req)).catch((e) => ({ ok: false, problems: [`verification unavailable: ${e.message}`], unexpected: [], verified: [] }));
+        const check = await g.verify(req.changes, before, orgOf(req), policy).catch((e) => ({ ok: false, problems: [`verification unavailable: ${e.message}`], unexpected: [], verified: [] }));
         logEvent('postverify', { request_id: id, ...check });
         if (check.problems.length) return final(id, 'failed', `Reason: the setup was reported as complete, but our independent Salesforce check found: ${check.problems.join('; ')}.`);
         if (check.unexpected.length) return final(id, 'needs_review', `The requested changes were made, but the independent check also found changes that were not in the approved plan: ${check.unexpected.slice(0, 10).join('; ')}. A teammate will review them.`);
+        if (hasCode(req.changes)) await notifyStage(getRequest(id), 'deployed', 'Deployed: the new code is in your org and our own independent check confirmed it.');
         const doneExtra = smartOn(req) ? findingsExtra(parsePlannerFindings(n.summary)) : {};
         return final(id, 'succeeded', `${smartOn(req) ? stripFindings(n.summary) : n.summary}\n\nIndependently verified in Salesforce: ${check.verified.length} of ${req.changes.length} components (${check.verified.slice(0, 8).join('; ')}).`, doneExtra);
       }
@@ -338,6 +342,44 @@ export async function runBuild(id, approvedVersion) {
     // Technical cause stays in the run_error event; a build may have partly run, so do not claim nothing changed.
     return final(id, 'failed', `Reason: we ran into a technical problem while applying your changes (reference ${id}). Some changes may have been made; a teammate will check the org.`);
   }
+}
+
+// ---- stage updates for builds that include custom code or a Flow ----
+const CODE_TYPES = new Set(['apexclass', 'apextrigger', 'lightningcomponentbundle', 'flow']);
+const hasCode = (changes = []) => changes.some((c) => CODE_TYPES.has(String(c.type).toLowerCase()));
+const STAGES = {
+  CODE_WRITTEN: ['code_written', 'Code written'],
+  CHECK_DONE: ['dry_run_done', 'Dry run complete'],
+  TESTS_PASSED: ['tests_passed', 'Tests passed'],
+};
+
+/** Finds "PROGRESS: STAGE - text" lines in the planner's recent messages. Returns [{ key, stage, text }] in order. */
+export function parseProgress(json) {
+  const out = [];
+  const msgs = Array.isArray(json?.recentMessages) ? json.recentMessages : [];
+  for (const m of msgs) {
+    if (m.type !== 'assistant' || typeof m.content !== 'string') continue;
+    for (const line of m.content.split('\n')) {
+      const x = line.match(/^\s*\**PROGRESS:\s*\**\s*(CODE_WRITTEN|CHECK_DONE|TESTS_PASSED)\s*-\s*(.+?)\s*$/i);
+      if (x) { const [key, label] = STAGES[x[1].toUpperCase()]; out.push({ key, label, text: x[2] }); }
+    }
+  }
+  return out;
+}
+
+/** Posts each new stage once (survives repeated polls and restarts through stages_sent). */
+function stageReporter(id) {
+  return async (json) => {
+    const req = getRequest(id);
+    if (!req || !hasCode(req.changes)) return;
+    const sent = new Set(req.stages_sent || []);
+    for (const s of parseProgress(json)) {
+      if (sent.has(s.key)) continue;
+      sent.add(s.key);
+      updateRequest(id, { stages_sent: [...sent] });
+      await notifyStage(getRequest(id), s.key, `${s.label}: ${s.text}`);
+    }
+  };
 }
 
 const final = (id, status, message, extra) => setStatus(id, status, message, { isTerminal: true, channel: 'final', extra });

@@ -49,8 +49,9 @@ test('policy allows Named/External Credentials and External Client Apps', () => 
   assert.match(r.warnings.join(' '), /never shown in chat/);
 });
 
-test('policy refuses deletes, Apex, profiles, unknown types and oversized plans', () => {
-  const bad = (c) => evaluatePolicy([c], policy);
+test('policy refuses deletes, Apex, profiles, unknown types and oversized plans (code switched off)', () => {
+  const off = { ...policy, code_enabled: false };
+  const bad = (c) => evaluatePolicy([c], off);
   assert.match(bad({ action: 'delete', type: 'CustomField', name: 'Account.X__c' }).blocked[0].why, /deleting/);
   assert.match(bad({ action: 'create', type: 'ApexClass', name: 'X' }).blocked[0].why, /admin/);
   assert.match(bad({ action: 'modify', type: 'Profile', name: 'Admin' }).blocked[0].why, /admin/);
@@ -58,6 +59,37 @@ test('policy refuses deletes, Apex, profiles, unknown types and oversized plans'
   assert.match(bad({ action: 'create', type: 'SomethingNew', name: 'Y' }).blocked[0].why, /not on the list/);
   const many = Array.from({ length: 31 }, (_, i) => ({ action: 'create', type: 'CustomField', name: `Account.F${i}__c` }));
   assert.equal(evaluatePolicy(many, policy).ok, false);
+});
+
+test('code and Flows: only new components, only in sandbox or developer orgs', () => {
+  const trig = { action: 'create', type: 'ApexTrigger', name: 'AccountRatingTrigger' };
+  assert.equal(evaluatePolicy([trig], policy, new Set(), { orgKind: 'developer' }).ok, true);
+  assert.equal(evaluatePolicy([trig], policy, new Set(), { orgKind: 'sandbox' }).ok, true);
+  const prod = evaluatePolicy([trig], policy, new Set(), { orgKind: 'production' });
+  assert.equal(prod.ok, false);
+  assert.match(prod.blocked[0].why, /production org/);
+  assert.equal(evaluatePolicy([trig], policy, new Set(), { orgKind: 'unknown' }).ok, false);
+  assert.equal(evaluatePolicy([trig], policy).ok, false);
+  const existing = evaluatePolicy([trig], policy, new Set(['apextrigger:accountratingtrigger']), { orgKind: 'developer' });
+  assert.match(existing.blocked[0].why, /already exists/);
+  assert.match(evaluatePolicy([{ ...trig, action: 'modify' }], policy, new Set(), { orgKind: 'developer' }).blocked[0].why, /may not be changed/);
+  const lwc = [{ action: 'create', type: 'LightningComponentBundle', name: 'riskBadge' }, { action: 'create', type: 'Flow', name: 'Set_Rating' }];
+  const ok = evaluatePolicy(lwc, policy, new Set(), { orgKind: 'developer' });
+  assert.equal(ok.ok, true);
+  assert.match(ok.warnings.join(' '), /switched off until you ask/);
+  // other code types stay blocked
+  assert.equal(evaluatePolicy([{ action: 'create', type: 'ApexPage', name: 'P' }], policy, new Set(), { orgKind: 'developer' }).ok, false);
+  assert.equal(evaluatePolicy([trig], { ...policy, code_enabled: false }, new Set(), { orgKind: 'developer' }).ok, false);
+});
+
+test('code prompts: planner may plan code, build message asks for stage markers', () => {
+  const p = buildPlanPrompt({ requestor_email: 'a@b.c', change_request: 'x', business_reason: 'y' }, 'fmr_1', policy);
+  assert.match(p, /CUSTOM CODE AND FLOWS are allowed/);
+  assert.doesNotMatch(p, /Do not plan changes to:[^\n]*ApexClass/);
+  const off = buildPlanPrompt({ requestor_email: 'a@b.c', change_request: 'x' }, 'fmr_1', { ...policy, code_enabled: false });
+  assert.match(off, /Do not plan changes to:[^\n]*ApexClass/);
+  assert.match(buildApprovalMessage('v1', 'x', { code: true }), /PROGRESS: CODE_WRITTEN[\s\S]*CHECK_DONE[\s\S]*TESTS_PASSED/);
+  assert.doesNotMatch(buildApprovalMessage('v1', 'x', {}), /PROGRESS:/);
 });
 
 test('existing components of create-only types cannot be modified (T4 overwrite protection)', () => {
