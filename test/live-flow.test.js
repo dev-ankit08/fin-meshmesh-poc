@@ -196,6 +196,13 @@ test('live: code build reports each stage once, then deployed after independent 
   assert.match(build.args.message, /check-only/);
 });
 
+test('live: stage lines that scrolled away are backfilled from the independent check, without inventing a dry run', async () => {
+  const mesh = fakeMesh([[msg(CODE_PLAN)], [busy('execution'), msg('Done.\nRESULT: SUCCEEDED')]]);
+  const r = await planThenBuild(mesh, fakeOrg(CODE_BEFORE, CODE_AFTER));
+  assert.equal(r.status, 'succeeded', r.last_message);
+  assert.deepEqual(stageEvents(r.request_id).map((e) => e.stage), ['code_written', 'tests_passed', 'deployed']);
+});
+
 test('live: code build with failing tests is reported as failed, never deployed', async () => {
   const mesh = fakeMesh([[msg(CODE_PLAN)], [busy('execution'), msg('Done.\nRESULT: SUCCEEDED')]]);
   const after = { ...CODE_AFTER, testResults: [{ Outcome: 'Pass' }, { Outcome: 'Fail' }] };
