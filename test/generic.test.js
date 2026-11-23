@@ -110,7 +110,8 @@ test('generic contract: free-form change_request is required, legacy fields are 
   assert.equal(v.ok, true);
   assert.equal(v.value.contract, 'generic');
   const miss = validateRequest({ requestor_email: 'a@b.com' });
-  assert.deepEqual(miss.missing, ['change_request', 'business_reason']);
+  assert.deepEqual(miss.missing, ['change_request']);
+  assert.equal(validateRequest({ requestor_email: 'a@b.com', change_request: 'x'.repeat(30), plan_callback_url: 'https://x.test/p' }).ok, true, 'business_reason is optional');
   assert.match(validateRequest({ requestor_email: 'a@b.com', change_request: 'do it', business_reason: 'x' }).invalid.join(), /too short/);
   assert.match(validateRequest({ requestor_email: 'a@b.com', change_request: 'x'.repeat(30), business_reason: 'x' }).invalid.join(), /plan_callback_url is required/);
   assert.match(validateRequest({ requestor_email: 'a@b.com', change_request: 'x'.repeat(30), business_reason: 'x', plan_callback_url: 'http://evil.example/' }).invalid[0], /https/);
