@@ -46,5 +46,10 @@ export const config = {
   policyFile: env('POLICY_FILE', path.join(ROOT, 'config', 'policy.json')),
   planTtlMinutes: Number(env('PLAN_TTL_MINUTES', 60)),
 
+  // Smarter planning for generic (customer-approval) requests: the planner also reports what is already done,
+  // redundant or conflicting, its dependencies, and manual steps. OFF by default; turn on only after the Fin
+  // Procedure has branches and attributes for assessment / dependencies / manual_steps / already_done.
+  smartPlanning: env('SMART_PLANNING', 'false') === 'true',
+
   dataDir: env('DATA_DIR', path.join(ROOT, 'data')),
 };

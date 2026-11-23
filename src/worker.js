@@ -10,9 +10,9 @@
 // pre-check pass, because the customer already confirmed Fin's summary (the original PoC behaviour).
 import { config } from './config.js';
 import { updateRequest, getRequest, logEvent } from './store.js';
-import { notifyFin } from './notify.js';
+import { notifyFin, notifyStage } from './notify.js';
 import * as mesh from './meshmesh.js';
-import { parseChangeset, planVersion, formatChanges, formatChangesForCustomer, stripChangeset } from './changeset.js';
+import { parseChangeset, planVersion, formatChanges, formatChangesForCustomer, stripChangeset, parsePlannerFindings, stripFindings } from './changeset.js';
 import { loadPolicy, evaluatePolicy, describeBlocked } from './policy.js';
 import { buildPlanPrompt, buildApprovalMessage, buildRevisionMessage, CHANGESET_REMINDER } from './prompt.js';
 import { liveGuard, mockGuard } from './guard.js';
@@ -37,16 +37,40 @@ export function lastAssistantMessage(json) {
   return '';
 }
 
-/** 'succeeded' | 'failed' | 'needs_input' from the explicit "RESULT:" line; null when there is none. */
+/** 'succeeded' | 'failed' | 'needs_input' | 'already_done' from the explicit "RESULT:" line; null when there is none. */
 export function outcomeOf(message) {
-  const m = String(message).match(/RESULT:\s*\**\s*(SUCCEEDED|FAILED|NEEDS_INPUT)/i);
+  const m = String(message).match(/RESULT:\s*\**\s*(SUCCEEDED|FAILED|NEEDS_INPUT|ALREADY_DONE)/i);
   return m ? m[1].toLowerCase() : null;
 }
+
+/** Smart planning applies to generic requests, where the customer approves the plan (never the legacy single-field path). */
+const smartOn = (req) => config.smartPlanning && approvalMode(req) === 'customer';
+
+/** The planner's findings as webhook fields ({} when there are none). */
+/** The plan the planner saved (get_plan). Its final chat message is only a short summary; the findings live in the saved plan. */
+async function savedPlanText(agentId) {
+  try {
+    const r = await meshApi.callTool('get_plan', { agentId });
+    const t = r?.json?.plan ?? r?.json?.planText ?? r?.text ?? '';
+    return typeof t === 'string' ? t : '';
+  } catch { return ''; }
+}
+
+/** First non-empty value of each section across several parsed findings (saved plan first, chat message as fallback). */
+function mergeFindings(...list) {
+  const out = { tags: [...new Set(list.flatMap((f) => f?.tags || []))] };
+  for (const k of ['assessment', 'dependencies', 'manual_steps']) out[k] = list.map((f) => f?.[k]).find(Boolean) || '';
+  out.has = { assessment: !!out.assessment, dependencies: !!out.dependencies, manual_steps: !!out.manual_steps };
+  return out;
+}
+
+const findingsExtra = (f) => (f ? Object.fromEntries(['assessment', 'dependencies', 'manual_steps'].filter((k) => f[k]).map((k) => [k, f[k]])) : {});
 
 /** Customer-safe text from a MeshMesh message: no CHANGESET block, no "RESULT:" line. */
 export function cleanMessage(message) {
   return stripChangeset(String(message))
     .replace(/BEGIN_CHANGESET[\s\S]*?END_CHANGESET/g, '')
+    .replace(/^\s*\**PROGRESS:.*$/gim, '')
     .replace(/^\s*\**RESULT:.*$/gim, '')
     .replace(/\n{3,}/g, '\n\n')
     .trim();
@@ -88,14 +112,16 @@ const approvalMode = (req) => (req.input.plan_callback_url ? 'customer' : 'auto'
  * started, so a stale "turn complete" from the previous turn is not mistaken for this one.
  * Calls onConfirm() for per-step confirmations. Returns the normalised status of the finished turn.
  */
-async function waitForTurn(id, agentId, { deadline, prevMessage = '', onConfirm }) {
+async function waitForTurn(id, agentId, { deadline, prevMessage = '', onConfirm, onProgress }) {
   let lastSeen = '';
   let sawWork = false;
   let stalePolls = 0;
   while (Date.now() < deadline) {
-    await sleep(config.pollIntervalMs);
+    // While a code build runs, poll faster: the status only holds the last ~10 messages, so a stage line can scroll away.
+    await sleep(onProgress ? Math.min(config.pollIntervalMs, 5000) : config.pollIntervalMs);
     const st = await meshApi.callTool('get_agent_status', { agentId });
     const n = normaliseStatus(st);
+    if (onProgress) await onProgress(st.json).catch((e) => logEvent('progress_error', { request_id: id, error: e.message }));
     const fp = `${n.status}|${n.summary.slice(0, 120)}`;
     if (fp !== lastSeen) logEvent('meshmesh_status', { request_id: id, agentId, ...n, raw: st.json ?? st.text.slice(0, 1500) });
     lastSeen = fp;
@@ -145,7 +171,7 @@ export async function runPlan(id, { revision } = {}) {
     let prev = '';
     if (!revision) {
       const policy = loadPolicy();
-      const args = { name: `Fin ${id}: ${req.input.title}`.slice(0, 100), prompt: buildPlanPrompt(req.input, id, policy), mode: 'plan' };
+      const args = { name: `Fin ${id}: ${req.input.title}`.slice(0, 100), prompt: buildPlanPrompt(req.input, id, policy, { smart: smartOn(req) }), mode: 'plan' };
       const connId = req.input.connection_id || config.meshmeshConnectionId;
       if (connId) args.connectionIds = [connId];
       // "Sandbox not available - please try again" is MeshMesh saying nothing was started, so repeating is safe.
@@ -184,14 +210,22 @@ async function handlePlanTurn(id, agentId, n, deadline) {
   if (n.status === 'failed') return planEnd(id, 'failed', n.summary || 'We could not prepare the plan. Nothing was changed.');
   if (n.status === 'needs_connection') return planEnd(id, 'failed', 'Reason: we have no usable connection to your Salesforce org. Nothing was changed.');
   updateRequest(id, { last_plan_message: n.summary });
+  const smart = smartOn(getRequest(id));
+  const saved = smart ? await savedPlanText(agentId) : '';
+  const findings = smart ? mergeFindings(parsePlannerFindings(saved), parsePlannerFindings(n.summary)) : null;
+  const words = (t) => cleanMessage(smart ? stripFindings(t) : t);
 
+  if (smart && n.outcome === 'already_done') {
+    // Nothing to build: everything asked for already exists (or is covered by something that does). The evidence travels in `assessment`.
+    return planEnd(id, 'already_done', words(n.summary) || 'This is already set up, so nothing needs to change.', findingsExtra(findings));
+  }
   if (n.outcome === 'failed') {
     // MeshMesh declined in the plan turn (e.g. needs Apex/Flow): nothing was built, so this is a rejection, not an outage.
-    const why = cleanMessage(n.summary) || 'We could not plan this request through chat.';
-    return planEnd(id, 'rejected', `Reason: ${why}\n\nNothing was changed in Salesforce.`);
+    const why = words(n.summary) || 'We could not plan this request through chat.';
+    return planEnd(id, 'rejected', `Reason: ${why}\n\nNothing was changed in Salesforce.`, findingsExtra(findings));
   }
   if (n.outcome === 'needs_input' || n.status === 'needs_input') {
-    return setStatusNeedsInput(id, n.summary);
+    return setStatusNeedsInput(id, n.summary, findingsExtra(findings));
   }
 
   let { parsed, planText } = await readPlan(agentId, n);
@@ -205,17 +239,18 @@ async function handlePlanTurn(id, agentId, n, deadline) {
       return planEnd(id, 'failed', 'Reason: the plan could not be checked automatically, so it was not run. Nothing was changed in Salesforce; a teammate can review the request.');
     }
   }
-  return reviewPlan(id, parsed.changes, stripChangeset(planText));
+  const planFindings = smart ? mergeFindings(findings, parsePlannerFindings(planText)) : null;
+  return reviewPlan(id, parsed.changes, smart ? stripFindings(planText) : stripChangeset(planText), findingsExtra(planFindings));
 }
 
-async function setStatusNeedsInput(id, summary) {
+async function setStatusNeedsInput(id, summary, extra) {
   const req = getRequest(id);
   if (approvalMode(req) === 'auto') return planEnd(id, 'failed', `Reason: we need more information. ${summary}`);
-  return setStatus(id, 'needs_input', summary, { channel: 'plan' });
+  return setStatus(id, 'needs_input', summary, { channel: 'plan', extra });
 }
 
 /** Policy + org pre-check on a parsed CHANGESET, then ask the customer (or auto-approve in legacy mode). */
-export async function reviewPlan(id, changes, planSummary) {
+export async function reviewPlan(id, changes, planSummary, findingExtra = {}) {
   const req = getRequest(id);
   const policy = loadPolicy();
   const g = guard();
@@ -227,18 +262,19 @@ export async function reviewPlan(id, changes, planSummary) {
       return planEnd(id, 'rejected', 'Reason: the Salesforce safety check is unavailable, so the plan was not run. Nothing was changed in Salesforce.');
     }
   }
-  const pol = evaluatePolicy(changes, policy, pre.existing);
+  const kind = hasCode(changes) && policy.code_enabled === true ? await (g?.orgKind ? g.orgKind(orgOf(req)) : Promise.resolve('unknown')) : undefined;
+  const pol = evaluatePolicy(changes, policy, pre.existing, { orgKind: kind });
   logEvent('plan_review', { request_id: id, changes, policy: pol, precheck: { ...pre, existing: [...pre.existing] } });
   const version = planVersion(changes);
-  const changesText = formatChanges(changes);                 // technical: what the build is told to do, for admins
-  const changesPlain = formatChangesForCustomer(changes);     // plain business language: what the customer reads
+  const changesText = formatChanges(changes);                 // technical (API names): what the build is told to do, and what customers see
+  const changesPlain = formatChangesForCustomer(changes);     // plain business language: sent as changes_plain (not shown by the Procedure today)
   updateRequest(id, { changes, plan_version: version, plan_summary: planSummary.slice(0, 3000) });
 
   if (!pre.ok) {
-    return planEnd(id, 'rejected', `Reason: ${pre.conflicts.join('; ')}, so nothing was changed. Please choose a different name, or ask to update the existing component instead.`, { changes: changesPlain, changes_technical: changesText });
+    return planEnd(id, 'rejected', `Reason: ${pre.conflicts.join('; ')}, so nothing was changed. Please choose a different name, or ask to update the existing component instead.`, { ...findingExtra, changes: changesText, changes_plain: changesPlain });
   }
   if (!pol.ok) {
-    return planEnd(id, 'rejected', `Reason: part of this request can't be done through chat (${describeBlocked(pol.blocked)}). Nothing was changed in Salesforce. A teammate or your Salesforce admin can help with that part.`, { changes: changesPlain, changes_technical: changesText });
+    return planEnd(id, 'rejected', `Reason: part of this request can't be done through chat (${describeBlocked(pol.blocked)}). Nothing was changed in Salesforce. A teammate or your Salesforce admin can help with that part.`, { ...findingExtra, changes: changesText, changes_plain: changesPlain });
   }
   const warnings = [...pol.warnings, ...pre.notes].join(' ');
   if (!g) logEvent('guard_disabled', { request_id: id });
@@ -248,7 +284,7 @@ export async function reviewPlan(id, changes, planSummary) {
   }
   const expires = new Date(Date.now() + config.planTtlMinutes * 60_000).toISOString();
   return setStatus(id, 'plan_ready', `${planSummary.slice(0, 700)}`.trim() || "We've prepared a plan.", {
-    channel: 'plan', extra: { changes: changesPlain, changes_technical: changesText, warnings }, patch: { plan_expires_at: expires },
+    channel: 'plan', extra: { ...findingExtra, changes: changesText, changes_plain: changesPlain, warnings }, patch: { plan_expires_at: expires },
   });
 }
 
@@ -267,7 +303,7 @@ export async function runBuild(id, approvedVersion) {
       logEvent('snapshot', { request_id: id, types: before.types, counts: Object.fromEntries(Object.entries(before.snap).map(([k, v]) => [k, Object.keys(v).length])) });
     }
     updateRequest(id, { approved_version: approvedVersion, approved_at: new Date().toISOString() });
-    await meshApi.callTool('continue_agent', { agentId: req.agent_id, message: buildApprovalMessage(approvedVersion, formatChanges(req.changes)), mode: 'build' });
+    await meshApi.callTool('continue_agent', { agentId: req.agent_id, message: buildApprovalMessage(approvedVersion, formatChanges(req.changes), { smart: smartOn(req), code: hasCode(req.changes) }), mode: 'build' });
     await setStatus(id, 'building', "Plan approved. We're applying your changes now.");
 
     let asked = false;
@@ -275,6 +311,7 @@ export async function runBuild(id, approvedVersion) {
     for (;;) {
       const n = await waitForTurn(id, req.agent_id, {
         deadline, prevMessage: prev,
+        onProgress: stageReporter(id),
         onConfirm: async () => {
           await meshApi.callTool('continue_agent', { agentId: req.agent_id, message: 'Confirmed. Proceed with this step only if it is within the approved component list.' });
           await setStatus(id, 'building', "We're applying the changes to Salesforce.");
@@ -287,11 +324,20 @@ export async function runBuild(id, approvedVersion) {
       if (n.outcome === 'failed') return final(id, 'failed', n.summary);
       if (n.outcome === 'succeeded') {
         if (!g) return final(id, 'succeeded', `${n.summary}\n\n(Independent Salesforce check is disabled.)`);
-        const check = await g.verify(req.changes, before, orgOf(req)).catch((e) => ({ ok: false, problems: [`verification unavailable: ${e.message}`], unexpected: [], verified: [] }));
+        const check = await g.verify(req.changes, before, orgOf(req), policy).catch((e) => ({ ok: false, problems: [`verification unavailable: ${e.message}`], unexpected: [], verified: [] }));
         logEvent('postverify', { request_id: id, ...check });
         if (check.problems.length) return final(id, 'failed', `Reason: the setup was reported as complete, but our independent Salesforce check found: ${check.problems.join('; ')}.`);
         if (check.unexpected.length) return final(id, 'needs_review', `The requested changes were made, but the independent check also found changes that were not in the approved plan: ${check.unexpected.slice(0, 10).join('; ')}. A teammate will review them.`);
-        return final(id, 'succeeded', `${n.summary}\n\nIndependently verified in Salesforce: ${check.verified.length} of ${req.changes.length} components (${check.verified.slice(0, 8).join('; ')}).`);
+        if (hasCode(req.changes)) {
+          // A stage line can scroll out of the status window between polls: say what our own checks prove, in order, for any we missed.
+          const seen = new Set(getRequest(id).stages_sent || []);
+          const f = check.code?.facts || {};
+          if (!seen.has('code_written')) await notifyStage(getRequest(id), 'code_written', 'Code written: the code and its tests are written.');
+          if (!seen.has('tests_passed') && f.tests_passed) await notifyStage(getRequest(id), 'tests_passed', `Tests passed: ${f.tests} tests ran and all passed.`);
+          await notifyStage(getRequest(id), 'deployed', 'Deployed: the new code is in your org and our own independent check confirmed it.');
+        }
+        const doneExtra = smartOn(req) ? findingsExtra(parsePlannerFindings(n.summary)) : {};
+        return final(id, 'succeeded', `${smartOn(req) ? stripFindings(n.summary) : n.summary}\n\nIndependently verified in Salesforce: ${check.verified.length} of ${req.changes.length} components (${check.verified.slice(0, 8).join('; ')}).`, doneExtra);
       }
       if (!asked) {
         asked = true; prev = n.summary;
@@ -307,7 +353,50 @@ export async function runBuild(id, approvedVersion) {
   }
 }
 
-const final = (id, status, message) => setStatus(id, status, message, { isTerminal: true, channel: 'final' });
+// ---- stage updates for builds that include custom code or a Flow ----
+const CODE_TYPES = new Set(['apexclass', 'apextrigger', 'lightningcomponentbundle', 'flow']);
+const hasCode = (changes = []) => changes.some((c) => CODE_TYPES.has(String(c.type).toLowerCase()));
+const STAGES = {
+  CODE_WRITTEN: ['code_written', 'Code written'],
+  CHECK_DONE: ['dry_run_done', 'Dry run complete'],
+  TESTS_PASSED: ['tests_passed', 'Tests passed'],
+};
+
+/** Finds "PROGRESS: STAGE - text" lines in the planner's recent messages. Returns [{ key, stage, text }] in order. */
+export function parseProgress(json) {
+  const out = [];
+  const msgs = Array.isArray(json?.recentMessages) ? json.recentMessages : [];
+  for (const m of msgs) {
+    if (m.type !== 'assistant' || typeof m.content !== 'string') continue;
+    for (const line of m.content.split('\n')) {
+      const x = line.match(/^\s*\**PROGRESS:\s*\**\s*(CODE_WRITTEN|CHECK_DONE|TESTS_PASSED)\s*-\s*(.+?)\s*$/i);
+      if (x) { const [key, label] = STAGES[x[1].toUpperCase()]; out.push({ key, label, text: x[2] }); }
+    }
+  }
+  return out;
+}
+
+/** Posts each new stage once (survives repeated polls and restarts through stages_sent). */
+function stageReporter(id) {
+  return async (json) => {
+    const req = getRequest(id);
+    if (!req || !hasCode(req.changes)) return;
+    const sent = new Set(req.stages_sent || []);
+    for (const s of parseProgress(json)) {
+      if (sent.has(s.key)) continue;
+      // A later stage can only happen after the code was written, so never show it first.
+      if (s.key !== 'code_written' && !sent.has('code_written')) {
+        sent.add('code_written');
+        await notifyStage(getRequest(id), 'code_written', 'Code written: the code and its tests are written.');
+      }
+      sent.add(s.key);
+      updateRequest(id, { stages_sent: [...sent] });
+      await notifyStage(getRequest(id), s.key, `${s.label}: ${s.text}`);
+    }
+  };
+}
+
+const final = (id, status, message, extra) => setStatus(id, status, message, { isTerminal: true, channel: 'final', extra });
 
 // Kept for the original entry point / scripts.
 export async function runRequest(id) { return runPlan(id); }
