@@ -44,7 +44,7 @@ export function validateRequest(body = {}) {
   const legacy = isLegacy(body);
   const required = legacy
     ? ['requestor_email', 'field_label', 'field_type', 'permission_set', 'business_reason']
-    : ['requestor_email', 'change_request', 'business_reason'];
+    : ['requestor_email', 'change_request']; // business_reason is optional for free-form requests
   const missing = required.filter((k) => !str(body[k]));
   const invalid = [];
 

@@ -15,6 +15,7 @@ import * as mesh from './meshmesh.js';
 import { findExistingField, sfHealth } from './sfcheck.js';
 import { resolveCustomer, connectionReady } from './customers.js';
 import { brandScrub } from './notify.js';
+import { applyVerifiedIdentity } from './identity.js';
 
 const send = (res, code, body) => {
   res.writeHead(code, { 'Content-Type': 'application/json' });
@@ -113,8 +114,10 @@ const server = http.createServer(async (req, res) => {
       if (!authorised(req)) return send(res, 401, { accepted: false, error: 'unauthorised' });
 
       if (req.method === 'POST' && url.pathname === '/requests') {
-        const body = await readJson(req);
-        logEvent('request_received', { body });
+        const rawBody = await readJson(req);
+        const ident = applyVerifiedIdentity(rawBody, req.headers);
+        const body = ident.body;
+        logEvent('request_received', { body, email_source: ident.source, ...(ident.replaced ? { replaced_email: ident.replaced } : {}) });
         const v = validateRequest(body);
         if (!v.ok) {
           // 200 (not 4xx) so Fin can read the fields and ask the customer, instead of treating it as a connector outage.
