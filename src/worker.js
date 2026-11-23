@@ -116,7 +116,8 @@ async function waitForTurn(id, agentId, { deadline, prevMessage = '', onConfirm,
   let sawWork = false;
   let stalePolls = 0;
   while (Date.now() < deadline) {
-    await sleep(config.pollIntervalMs);
+    // While a code build runs, poll faster: the status only holds the last ~10 messages, so a stage line can scroll away.
+    await sleep(onProgress ? Math.min(config.pollIntervalMs, 5000) : config.pollIntervalMs);
     const st = await meshApi.callTool('get_agent_status', { agentId });
     const n = normaliseStatus(st);
     if (onProgress) await onProgress(st.json).catch((e) => logEvent('progress_error', { request_id: id, error: e.message }));
@@ -326,7 +327,14 @@ export async function runBuild(id, approvedVersion) {
         logEvent('postverify', { request_id: id, ...check });
         if (check.problems.length) return final(id, 'failed', `Reason: the setup was reported as complete, but our independent Salesforce check found: ${check.problems.join('; ')}.`);
         if (check.unexpected.length) return final(id, 'needs_review', `The requested changes were made, but the independent check also found changes that were not in the approved plan: ${check.unexpected.slice(0, 10).join('; ')}. A teammate will review them.`);
-        if (hasCode(req.changes)) await notifyStage(getRequest(id), 'deployed', 'Deployed: the new code is in your org and our own independent check confirmed it.');
+        if (hasCode(req.changes)) {
+          // A stage line can scroll out of the status window between polls: say what our own checks prove, in order, for any we missed.
+          const seen = new Set(getRequest(id).stages_sent || []);
+          const f = check.code?.facts || {};
+          if (!seen.has('code_written')) await notifyStage(getRequest(id), 'code_written', 'Code written: the code and its tests are written.');
+          if (!seen.has('tests_passed') && f.tests_passed) await notifyStage(getRequest(id), 'tests_passed', `Tests passed: ${f.tests} tests ran and all passed.`);
+          await notifyStage(getRequest(id), 'deployed', 'Deployed: the new code is in your org and our own independent check confirmed it.');
+        }
         const doneExtra = smartOn(req) ? findingsExtra(parsePlannerFindings(n.summary)) : {};
         return final(id, 'succeeded', `${smartOn(req) ? stripFindings(n.summary) : n.summary}\n\nIndependently verified in Salesforce: ${check.verified.length} of ${req.changes.length} components (${check.verified.slice(0, 8).join('; ')}).`, doneExtra);
       }
