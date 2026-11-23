@@ -522,7 +522,7 @@ Read on every request (no restart needed). Checked **before** the customer is as
 | Key | Meaning |
 |---|---|
 | `allowed_types` | Metadata types allowed through chat (fields, objects, validation rules, record types, layouts, Lightning pages, tabs, apps, permission sets and groups, assignments, queues, groups, roles, value sets, custom labels and permissions, Remote Site Settings, CSP Trusted Sites, Named/External Credentials, External Client Apps and their `ExtlClntApp*` settings, custom metadata). Anything else is refused (**fail closed**). |
-| `blocked_types` | Always refused: Apex, triggers, Visualforce, LWC/Aura, static resources, profiles, sharing, security/session settings, Connected Apps, auth providers, SSO, certificates, **Flows** (MeshMesh flow support is experimental), users. |
+| `blocked_types` | Always refused: Visualforce, Aura, static resources, profiles, sharing, security/session settings, Connected Apps, auth providers, SSO, certificates, users. **Apex, triggers, LWC and Flows are no longer blocked**; see §13.3 (`code_enabled`, `code_types`, `code_org_types`, `flow_activate`). |
 | `allowed_actions` | `create`, `modify`, `assign`. **Delete is never allowed.** |
 | `modify_allowed_types` | Types whose *existing* components may be changed (permission sets, layouts, pages, apps, value sets, credentials, External Client Apps…). Everything else is create-only, so an existing field can't be overwritten (T4). |
 | `watch_types` | Snapshotted before the build for drift detection (default: CustomField, CustomObject, PermissionSet, Layout, ValidationRule). |
@@ -611,7 +611,7 @@ Body:
 Create it next to the v1 Procedure (keep v1 **Disabled**). Trigger: *"The customer wants something set up or changed in their Salesforce org (fields, objects, validation rules, page layouts, permission sets or assignments, record types, credentials for callouts, External Client Apps, remote sites and similar) and wants it done for them."* Channels **Web**; audience **Fin PoC tester** (§7.1b).
 
 Steps (`@` inserts tools, `/` inserts a Condition; set Conditions to **Code**):
-1. **Instruction:** Say you can set up most Salesforce configuration in their connected sandbox. You'll collect the details, MeshMesh will prepare a plan, and **nothing changes until they approve that plan**. Code (Apex, triggers, components), flows, profiles, org-wide security settings and deletions can't be done in chat.
+1. **Instruction:** Say you can set up most Salesforce configuration in their connected sandbox. You'll collect the details, MeshMesh will prepare a plan, and **nothing changes until they approve that plan**. Profiles, org-wide security settings and deletions can't be done in chat. (Code and Flows were added later; see §13.)
 2. **Instruction:** Collect `requestor_email`, `change_request` and `business_reason`. Ask only for basics that are missing (which object or feature, names, field types or values, URLs, who needs access). Don't design the solution yourself. **Never ask for or accept passwords, API keys, tokens or secrets.** If the customer offers one, tell them not to share it and that their admin enters it in Setup.
 3. **Call data connector ①** with the three details; map `plan_callback_url` → **Wait for webhook `meshmesh_plan` callback URL**.
 4. **Instruction:** If `accepted = false`, explain `message`/`problems`, fix and call again. If `true`, share `request_id`, say MeshMesh is preparing a plan (1–3 minutes) and nothing has changed yet.
@@ -717,3 +717,47 @@ Finding from T14 (fixed): for a PermissionSet the bridge's post-verify only conf
 | `src/validate.js` | Generic contract; legacy contract translated into a `change_request` |
 | `scripts/plan-check.js`, `examples/*.json` | Dry-run policy + pre-check against the org |
 | `test/generic.test.js`, `test/live-flow.test.js`, `test/e2e-mock.test.js` | 37 tests total |
+
+## 13. Current behaviour (supersedes parts of §12; branch `main`, PRs #1 to #4)
+
+### 13.1 What changed since §12
+| Area | Now |
+|---|---|
+| Customer inputs | Only `change_request` is required from the customer. `requestor_email` is filled automatically and `business_reason` is optional (Fin sends "not given" if the customer gave none). Fin never asks for either. |
+| Requester email | Connector payload uses `"requestor_email": "{{email}}"` (the contact's own Email attribute). If the request carries `X-Intercom-Verified-Email`, the bridge prefers it over any body value (`src/identity.js`; logged as `email_source`). Intercom's connector does not send that header today, so it is only a fallback. |
+| Confirmation | The Procedure no longer repeats the request back. Once the customer states it, Fin calls the plan connector straight away and asks at most one short question only when essential information is missing. The explicit "yes" on MeshMesh's plan is unchanged and is the only approval gate. |
+| Customer wording | No vendor name, tool name or URL reaches the customer (`brandScrub` in `src/notify.js`, a voice rule in every planner prompt). Plans are shown in plain business language (`changes_plain`) with the technical list kept in `changes`. |
+| Smarter plans | The planner assesses each requested element and returns tagged sections (§13.2). |
+| Code and Flows | Apex classes and triggers, LWC and Flows can be built through chat, with staged customer updates (§13.3). |
+
+### 13.2 Assessment, dependencies and manual steps
+The planner prompt (`src/prompt.js`) asks MeshMesh to write, before the CHANGESET:
+- `ASSESSMENT: <ALREADY_DONE|REDUNDANT|CONFLICT|NEW> - <component> - <plain explanation>`, one line per requested element;
+- `DEPENDENCIES:` bullets naming every dependent component found, with a last bullet saying whether the list may be incomplete;
+- `MANUAL_STEPS:` at most 8 numbered Setup steps for anything the bridge must not or cannot build.
+
+Outcomes: all elements `ALREADY_DONE` or `REDUNDANT` gives an empty CHANGESET and `RESULT: ALREADY_DONE`; a `CONFLICT` gives `NEEDS_INPUT` and nothing is changed; partly done plans only the missing part. The plan webhook now has separate fields `assessment`, `dependencies`, `manual_steps` (each up to 1500 characters, so they are no longer cut at 900), alongside `message`, `changes`, `changes_plain`, `warnings`, `plan_version`. New plan `status`: **`already_done`** (terminal, nothing changed, shown as "already set up"). Enabled by `SMART_PLANNING=true` in `.env` (default `false`).
+
+Example, live (23 Nov): "Add a validation rule on Lead so Company cannot be blank when Lead Status is Qualified" returned `already_done`: Company is already required on every Lead, and the org has no "Qualified" status.
+
+### 13.3 Code and Flows through chat
+`config/policy.json` keys: `code_enabled` (`true`), `code_types` (`ApexClass`, `ApexTrigger`, `LightningComponentBundle`, `Flow`), `code_org_types` (`sandbox`, `developer`; production is refused), `flow_activate` (`false`: Flows deploy switched off). Only new components are allowed (existing ones are never overwritten) and deletes remain blocked.
+
+Build order, enforced in the build prompt, with one customer update per stage (`notifyStage`, posted straight into the chat, never out of order):
+1. `PROGRESS: CODE_WRITTEN` – code and tests written;
+2. `PROGRESS: CHECK_DONE` – check-only deployment that runs the new tests passed;
+3. `PROGRESS: TESTS_PASSED` – real deployment done and tests passed.
+After the build, the bridge independently verifies the components exist and the tests passed (`postverify.code`). A failing test gives `failed`; an unplanned change gives `needs_review`. Polling is faster during code builds and missed stage notices are back-filled.
+
+### 13.4 Intercom setup now
+- Connectors: **Start Salesforce configuration** (`POST <tunnel>/requests`) and **Decide on Salesforce plan** (`POST <tunnel>/requests/decision`). The first has inputs `change_request`, `business_reason` (optional in practice), `plan_callback_url`; no `requestor_email` input. Intercom needs a passing live test before a connector change can be published (use a `change_request` shorter than 15 characters, which is rejected without starting work).
+- Procedure: collect only the request, no email, no reason, no repeat-back, then connector, then the plan wait. Edit it through Fin's assistant pane, review the diff, publish to main, then publish to Fin Main with a version note.
+- The quick tunnel URL changes whenever `cloudflared` restarts; update both connectors when it does.
+
+### 13.5 Operations notes
+- **Restarting the bridge kills any in-flight plan** (requests stay in `planning`, and Fin may hand the conversation to a human). Restart only between conversations.
+- Orphaned `planning` requests after a restart are harmless; start a new conversation.
+- Plans left at `plan_ready` unapproved build nothing and expire after `PLAN_TTL_MINUTES`.
+
+### 13.6 Tests
+`npm test` runs the offline suite (`node --test test/*.test.js`), which now includes `test/identity.test.js` (verified-email preference), `test/smart-planning.test.js` (assessment, dependencies, manual steps, brand scrub, plain plans) and the code/Flow cases. Some tests call live MeshMesh and the org when configured; they can take several minutes and consume credits, so run them only when the org and sign-in are ready. Figures such as "37 tests" in §12.8 and `HANDOFF.md` are out of date.
