@@ -48,7 +48,7 @@ export function customerMessage(status, message) {
   const text = brandScrub(redactSecrets(message));
   const result = text.match(/RESULT:\s*\**\s*(SUCCEEDED|FAILED|NEEDS_INPUT)\s*(?:[-:–]\s*(.+))?/i);
   // ASSESSMENT / DEPENDENCIES / MANUAL_STEPS travel in their own webhook fields, so they are not repeated (or cut at 900 characters) here
-  const body = stripFindings(text).replace(/^\s*RESULT:.*$/gim, '').replace(/\n{3,}/g, '\n\n').trim();
+  const body = stripFindings(text).replace(/^\s*\**PROGRESS:.*$/gim, '').replace(/^\s*RESULT:.*$/gim, '').replace(/\n{3,}/g, '\n\n').trim();
   if (status === 'needs_input') {
     const q = result?.[2]?.trim();
     return q ? `Question: ${q}${body ? `\n\n${body}` : ''}` : body;

@@ -70,6 +70,7 @@ const findingsExtra = (f) => (f ? Object.fromEntries(['assessment', 'dependencie
 export function cleanMessage(message) {
   return stripChangeset(String(message))
     .replace(/BEGIN_CHANGESET[\s\S]*?END_CHANGESET/g, '')
+    .replace(/^\s*\**PROGRESS:.*$/gim, '')
     .replace(/^\s*\**RESULT:.*$/gim, '')
     .replace(/\n{3,}/g, '\n\n')
     .trim();
@@ -383,6 +384,11 @@ function stageReporter(id) {
     const sent = new Set(req.stages_sent || []);
     for (const s of parseProgress(json)) {
       if (sent.has(s.key)) continue;
+      // A later stage can only happen after the code was written, so never show it first.
+      if (s.key !== 'code_written' && !sent.has('code_written')) {
+        sent.add('code_written');
+        await notifyStage(getRequest(id), 'code_written', 'Code written: the code and its tests are written.');
+      }
       sent.add(s.key);
       updateRequest(id, { stages_sent: [...sent] });
       await notifyStage(getRequest(id), s.key, `${s.label}: ${s.text}`);

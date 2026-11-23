@@ -196,6 +196,16 @@ test('live: code build reports each stage once, then deployed after independent 
   assert.match(build.args.message, /check-only/);
 });
 
+test('live: a later stage seen first is preceded by code written, and PROGRESS lines never reach the customer', async () => {
+  const mesh = fakeMesh([[msg(CODE_PLAN)], [busy('execution'),
+    progress('PROGRESS: TESTS_PASSED - 2 tests passed'), msg('Done.\nPROGRESS: TESTS_PASSED - 2 tests passed\nRESULT: SUCCEEDED')]]);
+  const r = await planThenBuild(mesh, fakeOrg(CODE_BEFORE, CODE_AFTER));
+  assert.equal(r.status, 'succeeded', r.last_message);
+  assert.deepEqual(stageEvents(r.request_id).map((e) => e.stage), ['code_written', 'tests_passed', 'deployed']);
+  const { customerMessage } = await import('../src/notify.js');
+  assert.doesNotMatch(customerMessage('succeeded', r.last_message), /PROGRESS/);
+});
+
 test('live: stage lines that scrolled away are backfilled from the independent check, without inventing a dry run', async () => {
   const mesh = fakeMesh([[msg(CODE_PLAN)], [busy('execution'), msg('Done.\nRESULT: SUCCEEDED')]]);
   const r = await planThenBuild(mesh, fakeOrg(CODE_BEFORE, CODE_AFTER));
