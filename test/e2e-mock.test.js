@@ -110,14 +110,20 @@ test('duplicate field in the plan is refused before the customer is asked (T4 pr
   assert.match(plan.message, /^Reason: CustomField Account\.PoC_Customer_Tier__c already exists/);
 });
 
-test('policy refuses Apex and deletes through chat', async () => {
-  for (const cr of ['Write an apex trigger that updates the account rating', 'Please delete the old field on Account']) {
-    const k = uniq();
-    await call('/requests', { ...base, change_request: cr, plan_callback_url: url(`plan_${k}`) });
-    const plan = await hook(`plan_${k}`);
-    assert.equal(plan.status, 'rejected', cr);
-    assert.match(plan.message, /can't be done through chat/);
-  }
+test('policy refuses deletes through chat', async () => {
+  const k = uniq();
+  await call('/requests', { ...base, change_request: 'Please delete the old field on Account', plan_callback_url: url(`plan_${k}`) });
+  const plan = await hook(`plan_${k}`);
+  assert.equal(plan.status, 'rejected');
+  assert.match(plan.message, /can't be done through chat/);
+});
+
+test('Apex is planned (not refused) in a developer or sandbox org, with the code warning', async () => {
+  const k = uniq();
+  await call('/requests', { ...base, change_request: 'Write an apex trigger that updates the account rating', plan_callback_url: url(`plan_${k}`) });
+  const plan = await hook(`plan_${k}`);
+  assert.equal(plan.status, 'plan_ready');
+  assert.match(plan.warnings, /custom code or a Flow/);
 });
 
 test('MeshMesh question -> customer answers (revise) -> new plan', async () => {

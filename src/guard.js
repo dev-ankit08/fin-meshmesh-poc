@@ -55,6 +55,52 @@ async function soql(q, org, tooling = false) {
   return r?.records || [];
 }
 
+/** What kind of org is this? 'sandbox' | 'developer' | 'production' | 'unknown'. Custom code is only allowed in the first two. */
+export async function orgKind(org = config.sfTargetOrg) {
+  try {
+    const [o] = await soql('SELECT IsSandbox, OrganizationType, TrialExpirationDate FROM Organization', org);
+    if (!o) return 'unknown';
+    if (o.IsSandbox === true) return 'sandbox';
+    if (/developer/i.test(o.OrganizationType || '')) return 'developer';
+    return 'production';
+  } catch { return 'unknown'; }
+}
+
+const APEX_TYPES = new Set(['apexclass', 'apextrigger']);
+
+/** Extra proof for custom code, read-only: Apex is Active and its tests passed since `since`; Flows are inactive; LWC exists. */
+async function checkCode(changes, since, org, policy = {}) {
+  const problems = [];
+  const facts = { tests_passed: false, tests: 0, flow_inactive: null, apex_active: null };
+  const apex = changes.filter((c) => APEX_TYPES.has(lc(c.type)));
+  const flows = changes.filter((c) => lc(c.type) === 'flow');
+  if (apex.length) {
+    let ok = true;
+    for (const c of apex.filter((x) => lc(x.type) === 'apexclass' || lc(x.type) === 'apextrigger')) {
+      const tbl = lc(c.type) === 'apextrigger' ? 'ApexTrigger' : 'ApexClass';
+      const rows = await soql(`SELECT Name, Status FROM ${tbl} WHERE Name = '${esc(c.name)}'`, org, true);
+      if (!rows.length) { problems.push(`${c.type} ${c.name} was not found in the org`); ok = false; }
+      else if (rows[0].Status !== 'Active') { problems.push(`${c.type} ${c.name} is not active (status ${rows[0].Status})`); ok = false; }
+    }
+    facts.apex_active = ok;
+    const since_ = String(since || '').replace(/\.\d+Z$/, '.000+0000').replace(/Z$/, '.000+0000');
+    const res = await soql(`SELECT Outcome FROM ApexTestResult WHERE TestTimestamp >= ${new Date(since).toISOString().replace(/\.\d+Z$/, 'Z')}`, org, true).catch(() => []);
+    facts.tests = res.length;
+    const failed = res.filter((r) => r.Outcome !== 'Pass').length;
+    facts.tests_passed = res.length > 0 && failed === 0;
+    if (!res.length) problems.push('no test results were recorded for the new code');
+    else if (failed) problems.push(`${failed} of ${res.length} tests did not pass`);
+  }
+  for (const c of flows) {
+    const rows = await soql(`SELECT ApiName, ActiveVersionId, LatestVersionId FROM FlowDefinitionView WHERE ApiName = '${esc(c.name)}'`, org).catch(() => []);
+    if (!rows.length) { problems.push(`Flow ${c.name} was not found in the org`); continue; }
+    const active = !!rows[0].ActiveVersionId;
+    facts.flow_inactive = !active;
+    if (active && policy.flow_activate !== true) problems.push(`Flow ${c.name} is active but it should have been deployed switched off`);
+  }
+  return { problems, facts };
+}
+
 // Label match for fields (FieldDefinition ignores FLS, unlike describe).
 async function fieldByLabel(object, label, org) {
   if (!/^[A-Za-z0-9_]+$/.test(object)) return null;
@@ -155,8 +201,9 @@ function isSideEffectOf(fullName, changes) {
 }
 
 /** After MeshMesh says SUCCEEDED. Returns { ok, problems[], unexpected[], verified[] } */
-export async function verify(changes, before, org = config.sfTargetOrg) {
+export async function verify(changes, before, org = config.sfTargetOrg, policy = {}) {
   const problems = [];
+  let code = null;
   const unexpected = [];
   const verified = [];
   const lists = await listAll(before?.types?.length ? before.types : typesOf(changes), org);
@@ -191,6 +238,12 @@ export async function verify(changes, before, org = config.sfTargetOrg) {
     } else verified.push(`${c.type} ${c.name}`);
   }
 
+  if (changes.some((c) => APEX_TYPES.has(lc(c.type)) || lc(c.type) === 'flow')) {
+    code = await checkCode(changes, before?.taken_at, org, policy).catch((e) => ({ problems: [`could not check the new code: ${e.message}`], facts: {} }));
+    problems.push(...code.problems);
+    if (!code.problems.length) verified.push(`code checks passed (${code.facts.tests ? code.facts.tests + ' tests' : 'no Apex'}${code.facts.flow_inactive ? ', Flow off' : ''})`);
+  }
+
   // Drift: anything of a snapshotted type that changed but wasn't approved.
   const typeName = Object.fromEntries((before?.types || []).map((x) => [lc(x), x]));
   for (const [t, list] of lists) {
@@ -205,7 +258,7 @@ export async function verify(changes, before, org = config.sfTargetOrg) {
     }
     for (const k of Object.keys(prev)) if (!list.has(k)) unexpected.push(`removed ${T} ${k}`);
   }
-  return { ok: problems.length === 0 && unexpected.length === 0, problems, unexpected, verified };
+  return { ok: problems.length === 0 && unexpected.length === 0, problems, unexpected, verified, code };
 }
 
 // ---- mock guard (MESHMESH_MODE=mock): same interface, no Salesforce calls ----
@@ -217,6 +270,8 @@ export const mockGuard = {
     return { ok: conflicts.length === 0, conflicts, notes: [], existing };
   },
   async snapshot(changes, watch) { return { types: [...new Set([...changes.map((c) => c.type), ...watch])], snap: {}, taken_at: new Date().toISOString() }; },
-  async verify(changes) { return { ok: true, problems: [], unexpected: [], verified: changes.map((c) => `${c.type} ${c.name}`) }; },
+  async verify(changes) { return { ok: true, problems: [], unexpected: [], verified: changes.map((c) => `${c.type} ${c.name}`), code: null }; },
+  async orgKind() { return mockGuard.kind; },
+  kind: 'developer',
 };
-export const liveGuard = { precheck, snapshot, verify };
+export const liveGuard = { precheck, snapshot, verify, orgKind };

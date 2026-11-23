@@ -2,7 +2,7 @@
 // Uses the status shapes observed in the PoC (status/isExecuting/waitingFor/recentMessages).
 import { test, before } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync } from 'node:fs';
+import fs, { mkdtempSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
@@ -47,6 +47,10 @@ function fakeOrg(beforeState, afterState) {
   const fn = async (args) => {
     const t = (args.match(/--metadata-type (\w+)/) || [])[1];
     if (t) return Object.entries(state[t] || {}).map(([fullName, lastModifiedDate]) => ({ fullName, lastModifiedDate }));
+    if (/FROM Organization/.test(args)) return { records: [state.org || { IsSandbox: false, OrganizationType: 'Enterprise Edition' }] };
+    if (/FROM Apex(Class|Trigger)/.test(args)) return { records: state.apexRows || [] };
+    if (/FROM ApexTestResult/.test(args)) return { records: state.testResults || [] };
+    if (/FROM FlowDefinitionView/.test(args)) return { records: state.flowRows || [] };
     if (/FROM FieldPermissions/.test(args)) return { records: state.fieldPerms || [] };
     if (/FieldDefinition/.test(args)) return { records: [{ QualifiedApiName: 'Name', Label: 'Account Name' }, { QualifiedApiName: 'PoC_Customer_Tier__c', Label: 'PoC Customer Tier' }] };
     return { records: [] };
@@ -160,7 +164,56 @@ test('live: plan touching Apex is refused by policy', async () => {
   const apex = 'Plan\nBEGIN_CHANGESET\n[{"action":"create","type":"ApexClass","name":"Helper"}]\nEND_CHANGESET';
   const r = await planThenBuild(fakeMesh([[msg(apex)]]), fakeOrg(ORG_BEFORE, ORG_AFTER));
   assert.equal(r.status, 'rejected');
-  assert.match(r.last_message, /ApexClass changes need a Salesforce admin/);
+  assert.match(r.last_message, /only deployed to sandbox and Developer Edition orgs, and this is a production org/);
+});
+
+const DEV = { IsSandbox: false, OrganizationType: 'Developer Edition' };
+const CODE_PLAN = `Summary: I will add a trigger that marks big accounts Hot, with a test.
+BEGIN_CHANGESET
+[{"action":"create","type":"ApexTrigger","name":"AccountRatingTrigger","summary":"sets Rating"},
+ {"action":"create","type":"ApexClass","name":"AccountRatingTriggerTest","summary":"tests"}]
+END_CHANGESET`;
+const CODE_BEFORE = { ...ORG_BEFORE, org: DEV, ApexClass: {}, ApexTrigger: {} };
+const CODE_AFTER = { ...CODE_BEFORE, ApexClass: { AccountRatingTriggerTest: 't1' }, ApexTrigger: { AccountRatingTrigger: 't1' },
+  apexRows: [{ Name: 'AccountRatingTrigger', Status: 'Active' }], testResults: [{ Outcome: 'Pass' }, { Outcome: 'Pass' }] };
+const progress = (...lines) => ({ json: { status: 'waiting', isExecuting: true, phase: 'execution', recentMessages: lines.map((content) => ({ type: 'assistant', content })) } });
+const stageEvents = (id) => fs.readFileSync(path.join(process.env.DATA_DIR, 'events.log'), 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l)).filter((e) => e.type === 'stage_notice' && e.request_id === id);
+
+test('live: code build reports each stage once, then deployed after independent checks', async () => {
+  const mesh = fakeMesh([
+    [msg(CODE_PLAN)],
+    [busy('execution'),
+      progress('PROGRESS: CODE_WRITTEN - the trigger and its test are written'),
+      progress('PROGRESS: CODE_WRITTEN - the trigger and its test are written', 'PROGRESS: CHECK_DONE - the dry run passed'),
+      progress('PROGRESS: CODE_WRITTEN - the trigger and its test are written', 'PROGRESS: CHECK_DONE - the dry run passed', 'PROGRESS: TESTS_PASSED - 2 tests passed'),
+      msg('Deployed.\nRESULT: SUCCEEDED')],
+  ]);
+  const r = await planThenBuild(mesh, fakeOrg(CODE_BEFORE, CODE_AFTER));
+  assert.equal(r.status, 'succeeded', r.last_message);
+  const kinds = stageEvents(r.request_id).map((e) => e.stage);
+  assert.deepEqual(kinds, ['code_written', 'dry_run_done', 'tests_passed', 'deployed']);
+  const build = mesh.calls.find((c) => c.name === 'continue_agent' && c.args.mode === 'build');
+  assert.match(build.args.message, /check-only/);
+});
+
+test('live: code build with failing tests is reported as failed, never deployed', async () => {
+  const mesh = fakeMesh([[msg(CODE_PLAN)], [busy('execution'), msg('Done.\nRESULT: SUCCEEDED')]]);
+  const after = { ...CODE_AFTER, testResults: [{ Outcome: 'Pass' }, { Outcome: 'Fail' }] };
+  const r = await planThenBuild(mesh, fakeOrg(CODE_BEFORE, after));
+  assert.equal(r.status, 'failed');
+  assert.match(r.last_message, /1 of 2 tests did not pass/);
+  assert.equal(stageEvents(r.request_id).some((e) => e.stage === 'deployed'), false);
+});
+
+test('live: an active Flow is reported as a problem unless activation is allowed', async () => {
+  const flowPlan = 'Plan\nBEGIN_CHANGESET\n[{"action":"create","type":"Flow","name":"Set_Rating_Hot"}]\nEND_CHANGESET';
+  const before = { ...ORG_BEFORE, org: DEV, Flow: {} };
+  const mk = (active) => ({ ...before, Flow: { Set_Rating_Hot: 't1' }, flowRows: [{ ApiName: 'Set_Rating_Hot', ActiveVersionId: active ? '301x' : null }] });
+  const bad = await planThenBuild(fakeMesh([[msg(flowPlan)], [busy('execution'), msg('Done.\nRESULT: SUCCEEDED')]]), fakeOrg(before, mk(true)));
+  assert.equal(bad.status, 'failed');
+  assert.match(bad.last_message, /is active but it should have been deployed switched off/);
+  const good = await planThenBuild(fakeMesh([[msg(flowPlan)], [busy('execution'), msg('Done.\nRESULT: SUCCEEDED')]]), fakeOrg(before, mk(false)));
+  assert.equal(good.status, 'succeeded', good.last_message);
 });
 
 test('live: MeshMesh asks a question in planning -> needs_input', async () => {

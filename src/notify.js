@@ -113,30 +113,46 @@ export async function notifyFin(req, { status, message, isTerminal, channel, ext
   if (needFallback && config.intercomToken && config.intercomAdminId && req.input.conversation_id) {
     const head = { succeeded: 'completed', failed: 'not completed', plan_ready: 'plan ready for your approval', needs_input: 'question', rejected: 'cannot be done through chat', already_done: 'already set up', needs_review: 'needs a teammate to review' }[status] || status;
     const body = [payload.message, payload.assessment && `What we found:\n${payload.assessment}`, payload.changes && `Planned changes:\n${payload.changes}`, payload.dependencies && `Dependencies:\n${payload.dependencies}`, payload.manual_steps && `Steps to do yourself:\n${payload.manual_steps}`, payload.warnings].filter(Boolean).join('\n\n');
-    try {
-      const r = await fetch(`${config.intercomApiBase}/conversations/${encodeURIComponent(req.input.conversation_id)}/reply`, {
-        method: 'POST',
-        headers: {
-          Authorization: `Bearer ${config.intercomToken}`,
-          'Content-Type': 'application/json',
-          Accept: 'application/json',
-          'Intercom-Version': '2.13',
-        },
-        body: JSON.stringify({
-          message_type: config.intercomReplyType, // 'comment' (customer sees it) or 'note' (internal only)
-          type: 'admin',
-          admin_id: config.intercomAdminId,
-          body: `<p><b>Update on your Salesforce request ${req.request_id}: ${head}</b></p><p>${escapeHtml(body).replace(/\n/g, '<br>')}</p>`,
-        }),
-      });
-      results.intercom_reply = r.status;
-    } catch (e) {
-      results.intercom_reply = `error: ${e.message}`;
-    }
+    results.intercom_reply = await intercomReply(req, `<p><b>Update on your Salesforce request ${req.request_id}: ${head}</b></p><p>${escapeHtml(body).replace(/\n/g, '<br>')}</p>`);
   }
 
   logEvent('notify_fin', { request_id: req.request_id, status, channel, isTerminal, results });
   return results;
+}
+
+/** Posts one HTML comment into the customer's Intercom conversation. Returns the HTTP status or an error string. */
+async function intercomReply(req, html) {
+  try {
+    const r = await fetch(`${config.intercomApiBase}/conversations/${encodeURIComponent(req.input.conversation_id)}/reply`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${config.intercomToken}`,
+        'Content-Type': 'application/json',
+        Accept: 'application/json',
+        'Intercom-Version': '2.13',
+      },
+      body: JSON.stringify({
+        message_type: config.intercomReplyType, // 'comment' (customer sees it) or 'note' (internal only)
+        type: 'admin',
+        admin_id: config.intercomAdminId,
+        body: html,
+      }),
+    });
+    return r.status;
+  } catch (e) {
+    return `error: ${e.message}`;
+  }
+}
+
+/** A short progress line posted straight into the chat while a build runs (code written, check done, tests passed, deployed). */
+export async function notifyStage(req, stage, text) {
+  const clean = brandScrub(redactSecrets(String(text || ''))).replace(/\s+/g, ' ').trim().slice(0, 500);
+  let result = 'not_sent';
+  if (config.intercomToken && config.intercomAdminId && req.input?.conversation_id) {
+    result = await intercomReply(req, `<p>${escapeHtml(clean)}</p>`);
+  }
+  logEvent('stage_notice', { request_id: req.request_id, stage, text: clean, result });
+  return result;
 }
 
 const escapeHtml = (s) => s.replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
