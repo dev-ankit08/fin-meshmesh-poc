@@ -114,6 +114,15 @@ test('every payload from these real planner answers is vendor-free', async () =>
   }
 });
 
+test('parser gives the same result for CRLF (Windows) and LF line endings', () => {
+  for (const name of ['S1', 'S2a', 'S2b', 'S3a', 'S3b']) {
+    const lf = fx(name).replace(/\r\n/g, '\n');
+    const crlf = lf.replace(/\n/g, '\r\n');
+    assert.deepEqual(C.parsePlannerFindings(crlf), C.parsePlannerFindings(lf), `${name}: findings differ with CRLF`);
+    assert.equal(C.stripFindings(crlf), C.stripFindings(lf), `${name}: stripped text differs with CRLF`);
+  }
+});
+
 test('parser: tags, plain text, sections removed from the free text', () => {
   const f = C.parsePlannerFindings(fx('S2b'));
   assert.deepEqual(f.tags, ['CONFLICT']);
