@@ -1,0 +1,3 @@
+# Keep test fixtures byte-identical on Windows (CRLF broke the planner-output parser tests)
+test/fixtures/** text eol=lf
+*.sh text eol=lf
