@@ -1,8 +1,8 @@
-# Fin × MeshMesh PoC bridge
+# Fin × MeshMesh bridge
 
-Proof of concept: **Intercom Fin** collects a Salesforce configuration request in conversation, this bridge hands it to **MeshMesh** (remote MCP), MeshMesh configures a Salesforce org, and progress plus a verified final result are pushed back to Fin.
+**Intercom Fin** collects a Salesforce configuration request in conversation, this bridge hands it to **MeshMesh** (remote MCP), MeshMesh configures a Salesforce org, and progress plus a verified final result are pushed back to Fin.
 
-**v2: any Salesforce setup request.** The customer describes the change in their own words (fields, objects, validation rules, layouts, permission sets and assignments, Named/External Credentials for outbound callouts, External Client Apps, remote sites…). MeshMesh plans it and lists every component in a machine-readable **CHANGESET**. The bridge checks that list against a policy (`config/policy.json`) and the org, the **customer approves MeshMesh's actual plan** in Fin, MeshMesh builds exactly that list, and the bridge verifies every component and flags anything changed outside the plan.
+The customer describes the change in their own words (fields, objects, validation rules, layouts, permission sets and assignments, Named/External Credentials for outbound callouts, External Client Apps, remote sites…). MeshMesh plans it and lists every component in a machine-readable **CHANGESET**. The bridge checks that list against a policy (`config/policy.json`) and the org, the **customer approves MeshMesh's actual plan** in Fin, MeshMesh builds exactly that list, and the bridge verifies every component and flags anything changed outside the plan.
 
 ```
 Fin ──POST /requests {change_request}──▶ bridge ──MCP start_agent(plan)──▶ MeshMesh ──read-only──▶ Salesforce
@@ -13,13 +13,13 @@ Fin ──POST /requests/decision {approve, plan_version}──▶ bridge ──
  └──── progress webhook, final webhook (succeeded / failed / needs_review) ◀──┘
 ```
 
-v1 (one custom field on Account + layout + permission set Read/Edit) still works unchanged through the original connector. Details: [Technical guide §12](docs/Fin-MeshMesh-Technical-Guide.md#12-v2-generic-setup-requests).
+Full documentation: [Technical guide](docs/Fin-MeshMesh-Technical-Guide.md) (architecture, why it matters, file map, setup, testing with sample utterances).
 
 ## Quick start
 ```bash
 npm install
 cp .env.example .env        # fill in FIN_BEARER_TOKEN, MESHMESH_CONNECTION_ID, SF_TARGET_ORG
-npm test                    # 37 tests: unit, live path with fake MeshMesh/sf CLI, mock end to end
+npm test                    # unit tests, live path with fake MeshMesh/sf CLI, mock end to end
 npm start                   # http://localhost:8787/health
 # one-time MeshMesh sign-in (localhost only): http://localhost:8787/oauth/start
 # expose publicly, e.g.: cloudflared tunnel --url http://localhost:8787
@@ -36,16 +36,13 @@ npm start                   # http://localhost:8787/health
 | `src/worker.js` | Plan → policy + pre-check → customer approval → build → verify → final status |
 | `src/guard.js` | Generic read-only Salesforce guard (listMetadata pre-check, snapshot, post-verify, drift) |
 | `src/notify.js` | Pushes plan/progress/final status to Fin's Wait-for-webhook URLs; redacts secrets |
-| `src/sfcheck.js` | v1 field guard (Tooling `FieldDefinition`, `FieldPermissions`) |
+| `src/sfcheck.js` | Single-field checks (Tooling `FieldDefinition`, `FieldPermissions`) |
 | `scripts/plan-check.js` | Dry-run a hand-written CHANGESET against policy and the org |
 | `src/meshmesh.js` | MCP client with OAuth (tokens in `data/`, git-ignored) |
-| `src/customers.js` | POC-03: per-customer MeshMesh connection + org (`config/customers.json`) |
+| `src/customers.js` | Per-customer MeshMesh connection + org (`config/customers.json`) |
 | `scripts/watch-log.ps1` | Live, readable event log |
 | `scripts/record-demo.ps1` | Full-screen demo recorder (press q to stop) |
-| `docs/` | Readout, execution plan, step-by-step technical guide, demo script |
-
-## Results
-All PoC requirements (POC-01 to POC-08) passed, including the final status shown in a live Intercom Messenger. Recommendation: **Proceed (iterate on hardening)**. See [docs/Fin-MeshMesh-Technical-Guide.md](docs/Fin-MeshMesh-Technical-Guide.md).
+| `docs/` | Technical guide and supporting documents |
 
 ## Security
-`.env` and `data/` (OAuth tokens, request logs) are git-ignored. Never commit tokens. PoC is for Developer Edition and sandbox orgs only.
+`.env` and `data/` (OAuth tokens, request logs) are git-ignored. Never commit tokens. Use Developer Edition and sandbox orgs only.
