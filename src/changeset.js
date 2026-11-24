@@ -161,7 +161,7 @@ const LIST_ITEM_RE = /^\s*([-*•]|\d+[.)])\s+/;
 
 /** Splits a message into { findings, rest } where rest is the text without the tagged sections. */
 function splitSections(text) {
-  const lines = String(text || '').split('\n');
+  const lines = String(text || '').split(/\r?\n/); // tolerate CRLF (Windows checkouts, CRLF replies)
   const assessments = [];
   const blocks = { DEPENDENCIES: [], MANUAL_STEPS: [] };
   const rest = [];
