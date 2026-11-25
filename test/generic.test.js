@@ -220,3 +220,14 @@ test('plain plan never leaks API names for any allowed type, and the technical l
   assert.doesNotMatch(plain, /__c\b|Thing_/);
   assert.match(formatChanges(changes), /^1\. Create /); // technical form (used for the build) keeps API names
 });
+
+test('plan prompt keeps the plan to what was asked and offers extras instead of adding them', async () => {
+  const { buildPlanPrompt, buildRevisionMessage } = await import('../src/prompt.js');
+  const p = buildPlanPrompt({ requestor_email: 'a@b.c', change_request: 'Create a Customer SLA picklist on Case' }, 'fmr_s', {});
+  assert.match(p, /SCOPE\. Plan only what the customer asked for/);
+  assert.match(p, /Do NOT add page layouts, permission sets, field-level access/);
+  assert.match(p, /Optional extras \(not included unless you ask\):/);
+  assert.match(p, /Never put an optional extra in the BEGIN_CHANGESET list/);
+  assert.doesNotMatch(p, /include page layouts, permission sets and any supporting component you touch/);
+  assert.match(buildRevisionMessage('add 3HR'), /asks for one of the optional extras you offered, add it to the list/);
+});

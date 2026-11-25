@@ -9,11 +9,18 @@ const CHANGESET_SPEC = [
   'BEGIN_CHANGESET',
   '[{"action":"create|modify|assign","type":"<Salesforce Metadata API type>","name":"<fullName>","label":"<label if any>","summary":"<one line: what changes>"}]',
   'END_CHANGESET',
-  'Rules for the list: one item per component; include page layouts, permission sets and any supporting component you touch;',
+  'Rules for the list: one item per component; list every component you will create or modify (page layouts and permission sets only when they are part of the plan, see the SCOPE rule);',
   'use Metadata API type names (CustomField, ValidationRule, Layout, PermissionSet, NamedCredential, ExternalCredential, ExternalClientApplication, ExtlClntAppOauthSettings, RemoteSiteSetting, ...);',
   'use full names (child components as Object.Name, e.g. "Account.Renewal_Risk__c", layouts as "Account-Account Layout");',
   'for a permission set assignment use type "PermissionSetAssignment" and name "<PermissionSet API name>:<username>";',
   'a component that already exists is "modify", never "create".',
+];
+
+// Scope: the plan is what the customer asked for. Helpful extras are offered, never added.
+const SCOPE_RULE = [
+  '10a. SCOPE. Plan only what the customer asked for, plus anything the requested components cannot be created without. Do NOT add page layouts, permission sets, field-level access, list views, reports or any other "make it visible or usable" component unless the customer asked for it.',
+  '    Instead, if such extras would normally be useful, add one short section to the plan text, before BEGIN_CHANGESET, headed exactly "Optional extras (not included unless you ask):" with at most 4 plain-language bullets, each worded as an offer (for example "Show the new field on the Case page layouts" or "Create a permission set so people can see and edit it").',
+  '    Say plainly what happens without them (for example that the field will exist but may not be visible to users until they are added). Never put an optional extra in the BEGIN_CHANGESET list, and leave the section out when there is nothing useful to offer.',
 ];
 
 const SMART_RULES = [
@@ -66,6 +73,7 @@ export function buildPlanPrompt(v, requestId, policy = {}, opts = {}) {
     '8. If something the request asks you to create already exists, end with "RESULT: FAILED - <component> already exists" unless modifying it is clearly what the customer wants.',
     '9. Start the plan with a 2-4 sentence summary in plain business language the customer will read.',
     `10. ${VOICE_RULE}`,
+    ...SCOPE_RULE,
     ...(opts.smart ? SMART_RULES : []),
     ...(codeOn ? CODE_RULES : []),
     ...CHANGESET_SPEC,
@@ -95,6 +103,7 @@ export function buildRevisionMessage(feedback) {
     feedback,
     '"""',
     'Update the plan accordingly. Still PLAN ONLY: change nothing. Follow all earlier rules and end with a new BEGIN_CHANGESET ... END_CHANGESET block (or a RESULT: NEEDS_INPUT / RESULT: FAILED line).',
+    'If the customer now asks for one of the optional extras you offered, add it to the list; if they do not, keep the list to what they asked for and keep the optional extras section as an offer.',
     VOICE_RULE,
   ].join('\n');
 }

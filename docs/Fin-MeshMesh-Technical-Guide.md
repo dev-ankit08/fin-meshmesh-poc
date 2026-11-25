@@ -176,6 +176,7 @@ MeshMesh is a general agent that takes plain language, so the bridge decides wha
 - **Existence checks are specified.** MeshMesh must check with the Tooling or Metadata API, never `describe`, which hides components the connecting user has no field-level access to; a match on API name or label counts as existing.
 - **The approved list is locked.** The approval message carries the plan version and the numbered list, and tells MeshMesh to stop if it needs anything else.
 - **Customer-safe voice.** Everything MeshMesh writes can reach the customer, so it must not name the platform or tools. `brandScrub` in `src/notify.js` is a second layer.
+- **The plan is what was asked.** A "create a field" request plans the field only. Page layouts, permission sets and similar "make it usable" components are offered in an *Optional extras* note in the plan text, never put in the CHANGESET, and are added only if the customer asks for them in a revision. (Before this rule, MeshMesh added them on its own to make the new field visible.)
 - **A prompt is a request, not a guarantee.** Every rule that matters is also enforced in code (§7).
 
 **Sample customer request**
@@ -201,6 +202,8 @@ RULES
 8. If something the request asks you to create already exists, end with "RESULT: FAILED - <component> already exists" ...
 9. Start the plan with a 2-4 sentence summary in plain business language.
 10. Everything you write is shown to the customer. Write as "we". Never mention the platform, tools or your own process ...
+10a. SCOPE. Plan only what the customer asked for, plus anything the requested components cannot be created without. Do NOT add page layouts, permission sets, field-level access ...
+     Instead, offer them under "Optional extras (not included unless you ask):" (at most 4 plain-language bullets) and say what happens without them. Never put an extra in the CHANGESET.
 [optional rules for code and Flows, and for assessment / dependencies / manual steps, when enabled]
 End your plan message with a machine-readable list of EVERY component you will create or modify:
 BEGIN_CHANGESET
@@ -226,6 +229,7 @@ The customer replied:
 Please make it a Currency field instead, and also add it to the Account compact layout.
 """
 Update the plan accordingly. Still PLAN ONLY: change nothing. Follow all earlier rules and end with a new BEGIN_CHANGESET ... END_CHANGESET block (or a RESULT: NEEDS_INPUT / RESULT: FAILED line).
+If the customer now asks for one of the optional extras you offered, add it to the list; if they do not, keep the list to what they asked for and keep the optional extras section as an offer.
 ```
 
 **The CHANGESET contract** (`src/changeset.js`)
