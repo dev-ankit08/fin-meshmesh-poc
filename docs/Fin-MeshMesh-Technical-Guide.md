@@ -48,7 +48,7 @@ A customer talking to **Intercom Fin** asks, in plain words, for something to be
 ```mermaid
 flowchart LR
   C["Customer"] -->|"chat"| S["Experience site<br/>Messenger with signed JWT"]
-  S --> F["Intercom Fin<br/>Procedure + 2 data connectors"]
+  S --> F["Intercom Fin<br/>Procedure + 3 data connectors"]
   F -->|"POST /requests<br/>POST /requests/decision<br/>Bearer token"| API
   subgraph BR["Bridge service (Node.js)"]
     API["HTTP API<br/>server.js"] --> W["Worker<br/>worker.js"]
@@ -71,7 +71,7 @@ flowchart LR
 | Bridge → MeshMesh | MeshMesh remote **MCP** server, `https://gateway.meshmesh.io/mcp` (Streamable HTTP) | OAuth 2.0 with PKCE, one-time browser consent, tokens refresh automatically |
 | MeshMesh → Salesforce | A MeshMesh **connection** to the org, created once by an admin | Salesforce OAuth, the connecting user's permissions |
 | Bridge → Salesforce (checks) | Salesforce CLI (`sf`), read-only queries | The CLI's own login; the bridge never sees a Salesforce token |
-| Bridge → Fin | Fin Procedure **Wait for webhook** URLs, one per wait | The URL itself is the secret |
+| Bridge → Fin | Fin Procedure **Wait for webhook** URLs, one per wait step (a wait step that a later reply re-enters can accept another delivery, §9) | The URL itself is the secret |
 | Bridge → Fin (fallback) | Intercom REST API reply into the conversation | Intercom access token |
 
 ### Request lifecycle
@@ -336,11 +336,12 @@ The Messenger on the site boots with a **JWT signed on the server**, so the user
 
 ## 9. What goes back to Fin
 
-Each Fin **Wait for webhook** URL accepts one delivery, so the bridge routes by channel (`src/notify.js`):
+The bridge sends each push to the URL Fin supplied for that channel (`src/notify.js`). Fin supplies the plan URL on the first call and a `plan_callback_url` on every revise call. In testing, the `meshmesh_plan_2` URL accepted repeated deliveries (§12.5); a URL for a step the Procedure has already left is ignored even though Intercom still answers `200`.
+
 
 | Channel | URL | Statuses |
 |---|---|---|
-| plan | `plan_callback_url` | `plan_ready`, `needs_input`, `rejected`, `failed`, `already_done` |
+| plan | `plan_callback_url` (the `meshmesh_plan` URL for the first plan, the `meshmesh_plan_2` URL for every revision) | `plan_ready`, `needs_input`, `rejected`, `failed`, `already_done` |
 | progress | `callback_url` | One non-terminal update (`building`). Code builds add one update per stage: code written, check deployment done, tests passed. |
 | final | `final_callback_url` | `succeeded`, `failed`, `needs_review` |
 
@@ -468,7 +469,7 @@ npm start                   # http://localhost:8787/health
 1. **Sign the bridge in to MeshMesh (once):** open `http://localhost:8787/oauth/start` on the same machine and click **Allow access**. Tokens are stored in `data/meshmesh-oauth.json` and refresh automatically.
 2. **Find the connection ID:** `npm run probe`, copy the `id` of your connection into `MESHMESH_CONNECTION_ID`, set `MESHMESH_MODE=live`, `SF_TARGET_ORG=<alias>`, restart.
 3. **Check health:** `GET /health` should show `"ok":true`, `"mode":"live"`, `meshmesh_authorised: true` and `salesforce_guard.ok: true`.
-4. **Expose it:** `cloudflared tunnel --no-autoupdate --url http://localhost:8787` and note the `https://….trycloudflare.com` address. **It changes whenever the tunnel restarts**; update both connectors each time, or host the bridge at a fixed address.
+4. **Expose it:** `cloudflared tunnel --no-autoupdate --url http://localhost:8787` and note the `https://….trycloudflare.com` address. **It changes whenever the tunnel restarts**; update **all three** connectors each time, or host the bridge at a fixed address.
 
 ### 12.5 Intercom
 **Connector ① `Start Salesforce configuration (MeshMesh PoC)`**: `POST https://<tunnel>/requests`, authentication token `Bearer <FIN_BEARER_TOKEN>` in the `Authorization` header, header `Content-Type: application/json`.
@@ -480,29 +481,47 @@ npm start                   # http://localhost:8787/health
 
 Body: `{"requestor_email":"{{email}}","change_request":"{{change_request}}","business_reason":"{{business_reason}}","plan_callback_url":"{{plan_callback_url}}","conversation_id":"{{conversation.id}}"}`. Fin tab: *Directly* **off**. To publish a connector change Intercom needs a passing live test; use `change_request = "short"`, which the bridge rejects without starting any work.
 
-**Connector ② `Decide on Salesforce plan (MeshMesh PoC)`**: `POST https://<tunnel>/requests/decision`, same token and header.
+Fin fills any connector input it can on its own, and an input **cannot be forced to stay empty**: a connector that lists a URL input can receive a URL (or a placeholder such as `wait_for_external_input.2`) even when the Procedure says not to send one. That is why the Procedure uses **three connectors**, each with only the inputs its step needs.
+
+**Connector ② `Decide on Salesforce plan (MeshMesh PoC)`** (approve and cancel only): `POST https://<tunnel>/requests/decision`, same token and header.
 | Input | Notes |
 |---|---|
 | `request_id` | From the plan webhook (Procedure). |
-| `decision` | Exactly `approve`, `revise` or `cancel`, from the customer's explicit answer. |
-| `plan_version` | From the plan webhook (approve). |
-| `feedback` | The customer's answer to a question, or the change they want (revise). |
-| `plan_callback_url` | The `meshmesh_plan_2` wait URL (revise only). |
+| `decision` | Exactly `approve` or `cancel`, from the customer's explicit answer. |
+| `plan_version` | From the plan webhook (approve). Cancel needs only the request ID. |
 | `callback_url`, `final_callback_url` | The `meshmesh_status` and `meshmesh_result` wait URLs (approve only). |
 
-Body: `{"request_id":"{{request_id}}","decision":"{{decision}}","plan_version":"{{plan_version}}","feedback":"{{feedback}}","plan_callback_url":"{{plan_callback_url}}","callback_url":"{{callback_url}}","final_callback_url":"{{final_callback_url}}"}`.
+Body: `{"request_id":"{{request_id}}","decision":"{{decision}}","plan_version":"{{plan_version}}","callback_url":"{{callback_url}}","final_callback_url":"{{final_callback_url}}"}`.
+
+**Connector ③ `Revise Salesforce plan (MeshMesh PoC)`** (change requests and answers to a question): `POST https://<tunnel>/requests/decision`, same token and header. Create it with the connector's **… → Duplicate** from connector ② and trim it.
+| Input | Notes |
+|---|---|
+| `request_id` | From the plan webhook (Procedure). |
+| `plan_version` | From the plan webhook. |
+| `feedback` | The customer's change, or their answer to a question. |
+| `plan_callback_url` | The `meshmesh_plan_2` wait URL. |
+
+Body, with `decision` fixed as a literal: `{"request_id":"{{request_id}}","decision":"revise","plan_version":"{{plan_version}}","feedback":"{{feedback}}","plan_callback_url":"{{plan_callback_url}}"}`.
+
+Connectors ② and ③ share the endpoint, so the test needs a fake request: use `request_id = fmr_test` (and, for ②, `decision = cancel`). The bridge answers `200` with `accepted:false` ("request not found"), which satisfies Intercom's passing-test rule without touching anything.
 
 **Procedure `Salesforce Setup Assistant (MeshMesh PoC)`.** Channel **Web**; audience **Fin PoC tester** (Settings → Data → Audiences) with the rule *Email is `<the Salesforce user's email>`*. Trigger: *the customer wants something set up or changed in their Salesforce org and wants it done for them.* Set Conditions to **Code**.
 1. **Instruction:** say most Salesforce configuration can be set up; a plan will be prepared and **nothing changes until the customer approves it**; profiles, org-wide security and deletions cannot be done in chat. Never ask for or accept passwords, keys or tokens.
 2. **Collect only the request** (no email, no repeat-back). Ask at most one short question, only if essential information is missing.
 3. **Call connector ①**; map `plan_callback_url` → the `meshmesh_plan` wait URL. If `accepted = false`, explain and retry; if true, share the request ID and say a plan is being prepared.
 4. **Wait for webhook `meshmesh_plan`** (attributes `status`, `message`, `changes`, `warnings`, `plan_version`, `request_id`, `change_count`; wait 15 min). Condition on `inputs["webhook"]["meshmesh_plan"]["status"]`:
-   - `plan_ready` → show the summary, the numbered changes verbatim and the warnings; ask *approve, change something, or cancel*. Approve needs an explicit yes → **connector ②** with `decision=approve` (map `callback_url` → `meshmesh_status`, `final_callback_url` → `meshmesh_result`). Change → **connector ②** `decision=revise` with the feedback, `plan_callback_url` → `meshmesh_plan_2`, wait `meshmesh_plan_2`, show it the same way. Cancel → `decision=cancel`.
-   - `needs_input` → ask the question, then `decision=revise` with the answer.
-   - `rejected` / `failed` → say it can't be done and **nothing was changed**, giving only the `Reason:` text; offer a teammate.
+   - `plan_ready` → show the summary, the numbered changes verbatim and the warnings; ask *approve, change something, or cancel*, then **wait for the customer's reply before calling any connector**.
+   - `needs_input` → ask the question and wait for the answer, then treat it as a revise.
+   - `rejected` / `failed` → say it can't be done and **nothing was changed**, quoting the `Reason:` text verbatim (see step 7); offer a teammate.
    - anything else → say it cannot be confirmed; hand off.
-5. **Wait for webhook `meshmesh_status`** → relay one short progress update (builds take a few minutes).
-6. **Wait for webhook `meshmesh_result`** (20 min), then Condition on its `status`: `succeeded` → complete and independently verified, next steps; `failed` → not completed, reason only, offer a teammate; `needs_review` → changes were made but extra changes were found; a teammate will review; anything else → hand off.
+5. **After the customer replies**, the reply is routed by what it says:
+   - **Approve** needs an explicit yes → **connector ②** with `decision=approve`, `plan_version`, `callback_url` → `meshmesh_status`, `final_callback_url` → `meshmesh_result`.
+   - **Cancel** → **connector ②** with `decision=cancel` and the request ID only.
+   - **Change, or the answer to a question** → **connector ③** with `request_id`, `plan_version`, `feedback` and `plan_callback_url` → the `meshmesh_plan_2` wait URL. Then **wait for webhook `meshmesh_plan_2`**, show the revised plan exactly like the first, ask approve, change or cancel again, and wait for the reply. Never call connector ② to revise.
+6. **Wait for webhook `meshmesh_status`** → relay one short progress update (builds take a few minutes). Then **wait for webhook `meshmesh_result`** (20 min) and condition on its `status`: `succeeded` → complete and independently verified, next steps; `failed` → not completed, reason only, offer a teammate; `needs_review` → changes were made but extra changes were found; a teammate will review; anything else → hand off.
+7. **Failure wording:** on every failure path (plan-stage `rejected` or `failed`, and a final `failed` or `needs_review`) Fin quotes the text after `Reason:` from the webhook message **word for word** in one short sentence. It never paraphrases, guesses a cause, says an object or feature is "not enabled", or adds explanations of its own. With no `Reason:` text it says only that the cause could not be confirmed. Then it offers a teammate. (An earlier version let Fin invent a reason; this rule fixed that.)
+
+**Several revisions.** The customer can revise repeatedly. In testing, three or more consecutive changes each returned a revised plan on the same `meshmesh_plan_2` URL. The most likely explanation is that every reply sends the Procedure back through the same top-level steps, so it re-enters the same wait; this is inferred from the logs, not confirmed in Intercom's documentation. The bridge sets no limit (`decide()` in `src/server.js` only counts revisions) and posts each new plan to the `plan_callback_url` carried by the revise call.
 
 Edit the Procedure through Fin's assistant pane, review the diff, publish to main, then publish to Fin Main with a version note. Keep the Procedure **Disabled** except while testing or in use.
 
@@ -514,7 +533,7 @@ Edit the Procedure through Fin's assistant pane, review the diff, publish to mai
 
 ### 13.1 Before you start
 - `GET http://localhost:8787/health` shows `ok`, `live`, `meshmesh_authorised: true`, `salesforce_guard.ok: true`.
-- The tunnel is up and **both connectors** point at its current address and are live.
+- The tunnel is up and **all three connectors** point at its current address and are live.
 - The Procedure is **Enabled** for the test audience, and the audience matches the test user's email.
 - You are logged in to the Experience site as the test user, and the Messenger opens.
 - Open the live log in a second window: `scripts/watch-log.ps1` on Windows, or `tail -f data/events.log` elsewhere.
@@ -578,7 +597,7 @@ Preview in Intercom only waits for the first webhook, so test the full flow in t
 | Symptom | Likely cause | Fix |
 |---|---|---|
 | Procedure does not trigger in the Messenger | Channel is not Web, or the audience email does not match the signed-in user | Channel → Web; set the audience to the Salesforce user's email; Fin falls back to a generic support flow otherwise |
-| Fin says the configuration could not be started | Tunnel down or its address changed (HTTP 530) | Restart `cloudflared`, update **both** connectors, run the connector test, set live |
+| Fin says the configuration could not be started | Tunnel down or its address changed (HTTP 530) | Restart `cloudflared`, update **all three** connectors, run each connector test, set live |
 | Connector test returns 401 | Token missing, wrong, or no `Bearer ` prefix | Re-check the token value |
 | `/health` shows `meshmesh_authorised: false` | MeshMesh sign-in missing or expired | Open `http://localhost:8787/oauth/start` and Allow |
 | Requests are refused with `no_connection` | The requester's email domain is not in `customers.json` | Add the domain (§8.2) |
@@ -586,6 +605,8 @@ Preview in Intercom only waits for the first webhook, so test the full flow in t
 | "Sandbox not available" from MeshMesh | MeshMesh is busy | The bridge retries after 10, 30 and 60 seconds |
 | Messenger does not boot on the site | The published LWC and the Apex method disagree, or the JWT secret is wrong | Publish the site; check `Object.keys(window.intercomSettings)` is `api_base, app_id, intercom_user_jwt`; check the secret |
 | Result seems slow | A plan takes one to three minutes and a build a few more, then two verifications | Wait; watch `data/events.log` for `postverify` and `notify_fin` |
+| A revised plan never appears in the chat | The revise call did not carry a real https `plan_callback_url`, or carried `callback_url`/`final_callback_url` instead | Read the `decision_received` event in `data/events.log`: a revise should have exactly `request_id, decision, plan_version, feedback, plan_callback_url`. If not, check that the Procedure calls connector ③ (not ②) to revise |
+| Fin gives a failure reason that is not in the message | A failure branch does not quote the `Reason:` text verbatim | Compare Fin's reply with the bridge's message in `data/events.log` and fix the failure steps (§12.5 step 7) |
 | Fin hands the conversation to a person after a restart | Restarting the bridge ends in-flight plans | Restart only between conversations |
 
 ---
@@ -595,6 +616,8 @@ Preview in Intercom only waits for the first webhook, so test the full flow in t
 - **Orgs:** sandbox or Developer Edition only; production is refused for code and out of scope for MeshMesh changes.
 - **Never allowed:** deletes, profiles, org-wide security settings, Connected Apps, SSO. Secrets are never entered in chat.
 - **Drift check scope:** it compares before and after in one org, so concurrent changes in the same org surface as `needs_review`.
+- **Connector inputs:** Fin fills connector inputs it can on its own and an input cannot be forced empty, so approve, cancel and revise use separate connectors (§12.5).
+- **Revisions:** the bridge sets no limit. Three or more consecutive revisions worked in testing; the explanation (the Procedure re-entering the same wait) is inferred, not confirmed.
 - **Public address:** a quick tunnel changes address on every restart and can be dropped by its provider; for ongoing use host the bridge at a fixed address (Cloud Run, Azure Functions or similar) with a secret manager.
 - **Identity:** the signed JWT protects the email only while the JWT secret is set and Intercom enforcement is on (§8.3).
 - **Windows and macOS:** the bridge, tests and scripts in `src/`, `scripts/*.js` and `test/` are cross-platform (Node and the Salesforce CLI). Only `watch-log.ps1` and `record-demo.ps1` are Windows-only. Line endings are handled: `.gitattributes` keeps test fixtures as LF and the parser accepts CRLF.
