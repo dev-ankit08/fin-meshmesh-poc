@@ -23,7 +23,9 @@ const DATA_TYPES = new Set(['permissionsetassignment']);
 // listMetadata returns CustomLabels as one "CustomLabels" file; individual labels are type CustomLabel.
 const LIST_TYPE_ALIAS = { customlabels: 'CustomLabel' };
 
-const lc = (s) => String(s || '').toLowerCase();
+// Salesforce lists some names percent-encoded (layout "Case-Case %28Sales%29 Layout") while a plan may write them plainly
+// ("Case-Case (Sales) Layout"). Compare both sides in decoded, lower-cased form so they match.
+const lc = (s) => { let x = String(s || ''); try { x = decodeURIComponent(x); } catch { /* not encoded */ } return x.toLowerCase(); };
 const listTypeOf = (type) => LIST_TYPE_ALIAS[lc(type)] || type;
 
 let cliOverride = null;

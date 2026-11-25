@@ -237,3 +237,18 @@ test('live: MeshMesh asks a question in planning -> needs_input', async () => {
   const r = await planThenBuild(fakeMesh([[msg('I need one detail.\nRESULT: NEEDS_INPUT - Which object should the rule be on?')]]), fakeOrg(ORG_BEFORE, ORG_AFTER));
   assert.equal(r.status, 'needs_input');
 });
+
+test('live: a layout written with parentheses matches Salesforce\'s percent-encoded name', async () => {
+  const plan = `Summary: add a field and show it on the Sales layout.
+BEGIN_CHANGESET
+[{"action":"create","type":"CustomField","name":"Account.Renewal_Risk_2__c","label":"Renewal Risk 2","summary":"Text(100)"},
+ {"action":"modify","type":"Layout","name":"Account-Account (Sales) Layout","summary":"add field"},
+ {"action":"modify","type":"PermissionSet","name":"Fin_PoC_Access","summary":"Read/Edit"}]
+END_CHANGESET`;
+  const before = { ...ORG_BEFORE, Layout: { 'Account-Account %28Sales%29 Layout': 't0' } };
+  const after = { ...ORG_AFTER, Layout: { 'Account-Account %28Sales%29 Layout': 't1' } };
+  const r = await planThenBuild(fakeMesh([[msg(plan)], [busy('execution'), msg('Done.\nRESULT: SUCCEEDED')]]), fakeOrg(before, after));
+  assert.equal(r.status, 'succeeded', r.last_message);
+  assert.match(r.last_message, /Independently verified in Salesforce: 3 of 3/);
+  assert.doesNotMatch(JSON.stringify(r.history), /does not exist yet|was not found in the org/);
+});
